@@ -39,9 +39,10 @@ export function ToggleButtonGroup<T extends string>({
 }: ToggleButtonGroupProps<T>) {
     // Container classes based on orientation
     // For vertical mode, use auto-rows-fr to ensure equal button sizes
+    // For horizontal mode, use auto-cols-fr to ensure equal button sizes regardless of count
     const containerClasses = vertical
         ? 'grid grid-cols-1 auto-rows-fr rounded-lg bg-gray-100 dark:bg-gray-600 p-0.5 w-auto'
-        : 'grid grid-cols-2 rounded-lg bg-gray-100 dark:bg-gray-600 p-0.5 h-10';
+        : `grid grid-flow-col auto-cols-fr rounded-lg bg-gray-100 dark:bg-gray-600 p-0.5 h-10`;
 
     // Button classes based on orientation
     const buttonOrientationClasses = vertical
@@ -72,11 +73,7 @@ export function ToggleButtonGroup<T extends string>({
                     <button
                         key={option.id}
                         type="button"
-                        onPointerUp={() => {
-                            // Use onPointerUp instead of onClick because writing-mode: sideways-lr
-                            // breaks click event generation on touch devices (the browser doesn't 
-                            // recognize mouseup as happening on the same element as mousedown due
-                            // to the rotated coordinate system)
+                        onClick={() => {
                             onChange(option.id);
                         }}
                         className={

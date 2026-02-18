@@ -219,9 +219,9 @@ export function ArtworkTabContent({
                 {/* MPC content - always rendered when showArtworkGrid is true, hidden via CSS to preserve state */}
                 {
                     showArtworkGrid && (
-                        <div className={artSource === 'mpc' ? 'flex-1 flex flex-col min-h-0' : 'hidden'}>
+                        <div className={artSource !== 'scryfall' ? 'flex-1 flex flex-col min-h-0' : 'hidden'}>
                             <CardArtContent
-                                artSource="mpc"
+                                artSource={artSource as any}
                                 query={displayData.name || modalCard.name || ''}
                                 cardSize={zoomLevel}
                                 selectedArtId={displayData.selectedArtId}
@@ -236,7 +236,7 @@ export function ArtworkTabContent({
                                 filtersCollapsed={mpcFiltersCollapsed}
                                 onFilterCountChange={setActiveFilterCount}
                                 containerClassStyle="flex-1 h-full"
-                                isActive={artSource === 'mpc'}
+                                isActive={artSource !== 'scryfall'}
                                 cardTypeLine={modalCard.type_line}
                             />
                         </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { searchMpcAutofill, type MpcAutofillCard } from "@/helpers/mpcAutofillApi";
+import { searchCustomCards } from "@/helpers/customCardsApi";
 import { buildMpcSearchParams, TOKEN_TYPE_COLLISIONS, type MpcCardType } from "@/helpers/tokenQueryUtils";
 import { useSettingsStore, useUserPreferencesStore } from "@/store";
 
@@ -52,6 +53,8 @@ export interface UseMpcSearchOptions {
     cardData?: { type_line?: string };
     /** Override card type (CARD, TOKEN, CARDBACK) - if not set, auto-detects */
     cardType?: MpcCardType;
+    /** Search context (e.g. 'mpc', 'cardsmith') - forces re-search when changed */
+    searchContext?: string;
 }
 
 /**
@@ -62,7 +65,7 @@ export function useMpcSearch(
     query: string,
     options: UseMpcSearchOptions = {}
 ): MpcSearchResult {
-    const { autoSearch = true, cardData, cardType: overrideCardType } = options;
+    const { autoSearch = true, cardData, cardType: overrideCardType, searchContext } = options;
 
     // User Preferences store for favorites
     const preferences = useUserPreferencesStore(s => s.preferences);
@@ -95,7 +98,7 @@ export function useMpcSearch(
     };
 
     // Refs for search deduplication
-    const lastSearchParams = useRef<{ name: string; fuzzy: boolean; cardType: MpcCardType; isCollision?: boolean } | null>(null);
+    const lastSearchParams = useRef<{ name: string; fuzzy: boolean; cardType: MpcCardType; isCollision?: boolean; context?: string } | null>(null);
     const lastSearchedName = useRef<string>("");
 
     // Search handler
@@ -115,9 +118,10 @@ export function useMpcSearch(
         if (lastSearchParams.current?.name === searchQuery &&
             lastSearchParams.current?.fuzzy === mpcFuzzySearch &&
             lastSearchParams.current?.cardType === effectiveCardType &&
-            lastSearchParams.current?.isCollision === isCollision) return;
+            lastSearchParams.current?.isCollision === isCollision &&
+            lastSearchParams.current?.context === searchContext) return;
 
-        lastSearchParams.current = { name: searchQuery, fuzzy: mpcFuzzySearch, cardType: effectiveCardType, isCollision };
+        lastSearchParams.current = { name: searchQuery, fuzzy: mpcFuzzySearch, cardType: effectiveCardType, isCollision, context: searchContext };
         lastSearchedName.current = query;
         setIsLoading(true);
         setHasSearched(true);
@@ -125,15 +129,71 @@ export function useMpcSearch(
         try {
             if (isCollision) {
                 // Dual search: get both regular cards and tokens for collision names
-                const [cardResults, tokenResults] = await Promise.all([
-                    searchMpcAutofill(searchQuery, 'CARD', mpcFuzzySearch),
-                    searchMpcAutofill(searchQuery, 'TOKEN', mpcFuzzySearch),
-                ]);
-                // Merge results (tokens first, then cards)
-                setCards([...tokenResults, ...cardResults]);
+                // Also search custom cards
+                
+                // Determine what to fetch based on context
+                const fetchMpc = !searchContext || searchContext === 'mpc';
+                const fetchCardsmith = !searchContext || searchContext === 'cardsmith';
+                const fetchCardBuilder = !searchContext || searchContext === 'cardbuilder';
+                
+                const promises: Promise<any>[] = [];
+                
+                if (fetchMpc) {
+                    promises.push(searchMpcAutofill(searchQuery, 'CARD', mpcFuzzySearch));
+                    promises.push(searchMpcAutofill(searchQuery, 'TOKEN', mpcFuzzySearch));
+                } else {
+                    promises.push(Promise.resolve([]));
+                    promises.push(Promise.resolve([]));
+                }
+                
+                if (fetchCardsmith) {
+                    promises.push(searchCustomCards(searchQuery, 'mtgcardsmith'));
+                } else {
+                    promises.push(Promise.resolve([]));
+                }
+                
+                if (fetchCardBuilder) {
+                    promises.push(searchCustomCards(searchQuery, 'mtgcardbuilder'));
+                } else {
+                    promises.push(Promise.resolve([]));
+                }
+
+                const [cardResults, tokenResults, cardsmithResults, cardbuilderResults] = await Promise.all(promises);
+                
+                // Merge results
+                const merged = [...tokenResults, ...cardResults, ...cardsmithResults, ...cardbuilderResults];
+                setCards(merged);
             } else {
-                const results = await searchMpcAutofill(searchQuery, effectiveCardType, mpcFuzzySearch);
-                setCards(results);
+                // Always search custom cards when searching for cards (not tokens)
+                const shouldSearchCustom = effectiveCardType === 'CARD';
+                
+                const fetchMpc = !searchContext || searchContext === 'mpc';
+                const fetchCardsmith = shouldSearchCustom && (!searchContext || searchContext === 'cardsmith');
+                const fetchCardBuilder = shouldSearchCustom && (!searchContext || searchContext === 'cardbuilder');
+
+                const promises: Promise<any>[] = [];
+
+                if (fetchMpc) {
+                    promises.push(searchMpcAutofill(searchQuery, effectiveCardType, mpcFuzzySearch));
+                } else {
+                    promises.push(Promise.resolve([]));
+                }
+
+                if (fetchCardsmith) {
+                    promises.push(searchCustomCards(searchQuery, 'mtgcardsmith'));
+                } else {
+                    promises.push(Promise.resolve([]));
+                }
+
+                if (fetchCardBuilder) {
+                    promises.push(searchCustomCards(searchQuery, 'mtgcardbuilder'));
+                } else {
+                    promises.push(Promise.resolve([]));
+                }
+                
+                const [mpcResults, cardsmithResults, cardbuilderResults] = await Promise.all(promises);
+                const merged = [...mpcResults, ...cardsmithResults, ...cardbuilderResults];
+                setCards(merged);
             }
         } catch (err) {
             console.error("MPC search error:", err);
@@ -141,7 +201,7 @@ export function useMpcSearch(
         } finally {
             setIsLoading(false);
         }
-    }, [query, mpcFuzzySearch, cardData, overrideCardType]);
+    }, [query, mpcFuzzySearch, cardData, overrideCardType, searchContext]);
 
     // Auto-search effect
     useEffect(() => {
@@ -157,7 +217,11 @@ export function useMpcSearch(
             return;
         }
 
-        if (!autoSearch || query === lastSearchedName.current) return;
+        if (!autoSearch) return;
+
+        // Note: We removed the `query === lastSearchedName.current` check here because it prevented
+        // re-searching when only the context (tab) changed but the query remained the same.
+        // The `performSearch` function handles deduplication internally via `lastSearchParams`.
 
         const timeoutId = setTimeout(() => {
             performSearch();

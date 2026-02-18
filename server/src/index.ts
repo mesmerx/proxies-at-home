@@ -8,6 +8,7 @@ import { imageRouter } from "./routes/imageRouter.js";
 import { streamRouter } from "./routes/streamRouter.js";
 import { mpcAutofillRouter } from "./routes/mpcAutofillRouter.js";
 import { scryfallRouter } from "./routes/scryfallRouter.js";
+import { customCardsRouter } from "./routes/customCardsRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
 import { initDatabase } from "./db/db.js";
 import { startImportScheduler } from "./services/importScheduler.js";
@@ -59,6 +60,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/stream", streamRouter);
   app.use("/api/mpcfill", mpcAutofillRouter);
   app.use("/api/scryfall", scryfallRouter);
+  app.use("/api/custom", customCardsRouter);
   app.use("/api/share", shareRouter);
 
   return new Promise((resolve) => {

@@ -1,14 +1,18 @@
 import { ToggleButtonGroup, type ToggleButtonGroupProps } from './ToggleButtonGroup';
 
-type ArtSource = 'scryfall' | 'mpc';
+type ArtSource = 'scryfall' | 'mpc' | 'cardsmith' | 'cardbuilder';
 
 const ART_SOURCE_OPTIONS = [
     { id: 'scryfall' as const, label: 'Scryfall', highlightColor: '#431e3f' },
     { id: 'mpc' as const, label: 'MPC Autofill', highlightColor: 'rgb(76, 155, 232)' },
+    { id: 'cardsmith' as const, label: 'Cardsmith', highlightColor: '#e65100' },
+    { id: 'cardbuilder' as const, label: 'Card Builder', highlightColor: '#00695c' },
 ];
 
 // Same options but reversed order (for vertical/landscape mode where sideways-lr reads bottom-to-top)
 const ART_SOURCE_OPTIONS_REVERSED = [
+    { id: 'cardbuilder' as const, label: 'Card Builder', highlightColor: '#00695c' },
+    { id: 'cardsmith' as const, label: 'Cardsmith', highlightColor: '#e65100' },
     { id: 'mpc' as const, label: 'MPC Autofill', highlightColor: 'rgb(76, 155, 232)' },
     { id: 'scryfall' as const, label: 'Scryfall', highlightColor: '#431e3f' },
 ];

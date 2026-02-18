@@ -74,7 +74,7 @@ function useStableSortKey<T>(
   return sortKeyRef.current;
 }
 
-type ArtSource = "scryfall" | "mpc";
+type ArtSource = "scryfall" | "mpc" | "cardsmith" | "cardbuilder";
 
 export interface CardArtContentProps {
   /** Art source to search */
@@ -209,11 +209,52 @@ export function CardArtContent({
     return extractMpcIdentifierFromImageId(selectedArtId) ?? undefined;
   }, [selectedArtId]);
   // MPC Search Hooks - sorting is done in CardArtContent using mpcSortKey for consistency
-  const mpcData = useMpcSearch(artSource === "mpc" ? query : "", {
+  const isMpcLike = artSource === "mpc" || artSource === "cardsmith" || artSource === "cardbuilder";
+  const mpcData = useMpcSearch(isMpcLike ? query : "", {
     autoSearch,
     // Pass card type_line for auto-detection of token cards
     cardData: cardTypeLine ? { type_line: cardTypeLine } : undefined,
+    // Pass search context to force re-search when switching between custom tabs
+    searchContext: artSource,
   });
+
+  // Filter MPC results by source if specific source selected
+  const filteredMpcCards = useMemo(() => {
+    
+    // When a specific custom source is selected, we want to show cards from that source
+    // regardless of the generic MPC source filters (which might default to user favorites).
+    // So we start from the raw cards list for custom sources.
+    if (artSource === "cardsmith") {
+      const allCards = mpcData.cards;
+
+      let cards = allCards.filter(c => c.sourceName === "MTG Cardsmith");
+
+      // Apply Tag filters if set
+      if (mpcData.filters.tagFilters.size > 0) {
+        cards = cards.filter(c => c.tags?.some(tag => mpcData.filters.tagFilters.has(tag)));
+      }
+      return cards;
+    }
+    
+    if (artSource === "cardbuilder") {
+      let cards = mpcData.cards.filter(c => c.sourceName === "MTG Card Builder");
+      // Apply Tag filters if set
+      if (mpcData.filters.tagFilters.size > 0) {
+        cards = cards.filter(c => c.tags?.some(tag => mpcData.filters.tagFilters.has(tag)));
+      }
+      return cards;
+    }
+
+    // For standard MPC mode, use the hook's filtered output which respects all filters including source
+    // But exclude custom sources to keep them exclusive to their own tabs
+    if (artSource === "mpc") {
+      return mpcData.filteredCards.filter(c => 
+        c.sourceName !== "MTG Cardsmith" && c.sourceName !== "MTG Card Builder"
+      );
+    }
+
+    return mpcData.filteredCards;
+  }, [mpcData.cards, mpcData.filteredCards, mpcData.filters, artSource]);
 
   // For DFC filtering in prints mode, extract face names and filter
   const uniqueFaces = useMemo(
@@ -270,10 +311,10 @@ export function CardArtContent({
 
   // MPC Sort Key
   const mpcSortKey = useStableSortKey(
-    !!isActive && artSource === "mpc",
+    !!isActive && isMpcLike,
     query,
     selectedMpcId,
-    mpcData.filteredCards
+    filteredMpcCards
   );
 
   // Track highlight IDs - we want these to always reflect current selection for the ring
@@ -504,7 +545,7 @@ export function CardArtContent({
 
   // Local MPC sorting - re-sort based on mpcSortKey
   const sortedMpcCards = useMemo(() => {
-    const cards = mpcData.filteredCards;
+    const cards = filteredMpcCards;
     if (mpcSortKey && cards.length > 0) {
       const idx = cards.findIndex((c) => c.identifier === mpcSortKey);
       if (idx > 0) {
@@ -516,11 +557,11 @@ export function CardArtContent({
       }
     }
     return cards;
-  }, [mpcData.filteredCards, mpcSortKey]);
+  }, [filteredMpcCards, mpcSortKey]);
 
   // Forward filter count changes (in useEffect to avoid setState during render)
   useEffect(() => {
-    if (artSource === "mpc" && onFilterCountChange) {
+    if (isMpcLike && onFilterCountChange) {
       onFilterCountChange(mpcData.activeFilterCount);
     } else if (artSource === "scryfall" && onFilterCountChange) {
       onFilterCountChange(scryfallSetFilters.size);
@@ -530,7 +571,23 @@ export function CardArtContent({
     onFilterCountChange,
     mpcData.activeFilterCount,
     scryfallSetFilters.size,
+    isMpcLike,
   ]);
+
+  // Total cards for the current source (before filters)
+  const totalMpcCards = useMemo(() => {
+    let cards = mpcData.cards;
+    if (artSource === "cardsmith") {
+      return cards.filter(c => c.sourceName === "MTG Cardsmith");
+    }
+    if (artSource === "cardbuilder") {
+      return cards.filter(c => c.sourceName === "MTG Card Builder");
+    }
+    if (artSource === "mpc") {
+      return cards.filter(c => c.sourceName !== "MTG Cardsmith" && c.sourceName !== "MTG Card Builder");
+    }
+    return cards;
+  }, [mpcData.cards, artSource]);
 
   // Determine current state based on source and mode
   const hasSearched =
@@ -545,7 +602,7 @@ export function CardArtContent({
       ? mode === "prints"
         ? (filteredPrints?.length ?? 0) > 0
         : scryfallSearchData.hasResults
-      : mpcData.filteredCards.length > 0;
+      : filteredMpcCards.length > 0;
 
   // Collapsed source groups state (for MPC source sort mode)
   // We track both explicitly collapsed sources AND whether "collapse all" mode is active
@@ -810,6 +867,14 @@ export function CardArtContent({
         </a>
         .
       </>
+    ) : artSource === "cardsmith" ? (
+      <>
+        Search for a card to find custom art on Cardsmith.
+      </>
+    ) : artSource === "cardbuilder" ? (
+      <>
+        Search for a card to find custom art on Card Builder.
+      </>
     ) : (
       <>
         Search for a card to find custom art.
@@ -830,13 +895,17 @@ export function CardArtContent({
   const noResultsMessage =
     artSource === "scryfall"
       ? "No cards found."
-      : `No MPC art found for "${query}"`;
+      : artSource === "cardsmith"
+        ? `No Cardsmith cards found for "${query}"`
+        : artSource === "cardbuilder"
+          ? `No Card Builder cards found for "${query}"`
+          : `No MPC art found for "${query}"`;
 
   // Check if we have results but they're all filtered out
   const hasResultsButFiltered =
-    (artSource === "mpc" &&
-      mpcData.cards.length > 0 &&
-      mpcData.filteredCards.length === 0) ||
+    (isMpcLike &&
+      totalMpcCards.length > 0 &&
+      filteredMpcCards.length === 0) ||
     (artSource === "scryfall" &&
       (mode === "prints"
         ? scryfallPrintsData.prints &&
@@ -846,8 +915,8 @@ export function CardArtContent({
         filteredScryfallCards.length === 0 &&
         !!query.trim()));
   const filteredOutMessage =
-    artSource === "mpc"
-      ? `"${query}" had ${mpcData.cards.length} result${mpcData.cards.length > 1 ? "s" : ""}, but current filters return none.`
+    isMpcLike
+      ? `"${query}" had ${totalMpcCards.length} result${totalMpcCards.length > 1 ? "s" : ""}, but current filters return none.`
       : `"${query}" had ${mode === "prints" ? scryfallPrintsData.prints?.length || 0 : scryfallSearchData.cards.length} result${(mode === "prints" ? scryfallPrintsData.prints?.length || 0 : scryfallSearchData.cards.length) !== 1 ? "s" : ""}, but current filters return none.`;
 
   return (
@@ -857,11 +926,11 @@ export function CardArtContent({
       <div className="flex-1 overflow-y-auto overflow-x-hidden relative scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent flex flex-col min-h-0">
         <div className="px-6 flex flex-col gap-4 w-full flex-1">
           {/* MPC Filter bar - only when not collapsed */}
-          {artSource === "mpc" && !filtersCollapsed && (
+          {isMpcLike && !filtersCollapsed && (
             <CardArtFilterBar
               filters={mpcData.filters}
-              cards={mpcData.cards}
-              filteredCards={mpcData.filteredCards}
+              cards={totalMpcCards}
+              filteredCards={filteredMpcCards}
               groupedBySource={mpcData.groupedBySource}
               setMinDpi={mpcData.setMinDpi}
               setSortBy={mpcData.setSortBy}
@@ -927,7 +996,7 @@ export function CardArtContent({
                   <Button
                     color="red"
                     onClick={
-                      artSource === "mpc"
+                      isMpcLike
                         ? mpcData.clearFilters
                         : () => setScryfallSetFilters(new Set())
                     }
@@ -1107,7 +1176,7 @@ export function CardArtContent({
                     </CardGrid>
                   )
                 ) : /* MPC Rendering */
-                  mpcGroupBySource ? (
+                  mpcGroupBySource && artSource === "mpc" ? (
                     /* Grouped by Source */
                     <div className="flex flex-col gap-4">
                       {(() => {
@@ -1207,7 +1276,7 @@ export function CardArtContent({
               {onSwitchSource &&
                 hasSearched &&
                 query.trim() &&
-                artSource === "mpc" && (
+                isMpcLike && (
                   <Button color="blue" onClick={onSwitchSource}>
                     Switch to Scryfall
                   </Button>

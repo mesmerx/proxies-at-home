@@ -496,20 +496,27 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
         ? `http://127.0.0.1:${process.env.PORT || 3001}${originalUrl}`
         : originalUrl;
 
+      console.log(`[Proxy] Fetching image from: ${fetchUrl}`);
+
       // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
       const response = await imageFetchLimit(() => getWithRetry(fetchUrl, { responseType: "arraybuffer" }));
 
       if (response.status >= 400 || !response.data) {
+        console.error(`[Proxy] Upstream error ${response.status} for ${fetchUrl}`);
         return res.status(502).json({ error: "Upstream error", status: response.status });
       }
       if (response.data.length === 0) {
+        console.error(`[Proxy] Upstream returned 0 bytes for ${fetchUrl}`);
         return res.status(502).json({ error: "Upstream is a 0-byte image" });
       }
 
       const ct = String(response.headers["content-type"] || "").toLowerCase();
       if (!ct.startsWith("image/")) {
+        console.error(`[Proxy] Upstream returned non-image content-type ${ct} for ${fetchUrl}`);
         return res.status(502).json({ error: "Upstream not image", ct });
       }
+
+      console.log(`[Proxy] Successfully fetched ${response.data.length} bytes from ${fetchUrl}`);
 
       // Write to cache
       await fs.promises.writeFile(localPath, Buffer.from(response.data));

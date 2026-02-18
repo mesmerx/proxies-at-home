@@ -1,5 +1,6 @@
 import type { CardInfo } from "./streamCards";
 import { batchSearchMpcAutofill, type MpcAutofillCard, getMpcAutofillImageUrl } from "./mpcAutofillApi";
+import { batchSearchCustomCards } from "./customCardsApi";
 import { parseMpcCardName } from "./mpcUtils";
 import { useUserPreferencesStore } from "../store";
 import { debugLog } from "./debug";
@@ -55,14 +56,31 @@ export async function findBestMpcMatches(
     const minDpi = prefs?.favoriteMpcDpi || 0; // 0 means no DPI filter
 
     // Batch search - separate searches for tokens and cards
-    const [tokenResults, cardResults] = await Promise.all([
+    const uniqueAllNames = [...uniqueTokenNames, ...uniqueCardNames];
+    
+    const [tokenResults, cardResults, customResults] = await Promise.all([
         uniqueTokenNames.length > 0
             ? batchSearchMpcAutofill(uniqueTokenNames, 'TOKEN')
             : {} as Record<string, MpcAutofillCard[]>,
         uniqueCardNames.length > 0
             ? batchSearchMpcAutofill(uniqueCardNames, 'CARD')
             : {} as Record<string, MpcAutofillCard[]>,
+        uniqueAllNames.length > 0
+            ? batchSearchCustomCards(uniqueAllNames)
+            : {} as Record<string, MpcAutofillCard[]>,
     ]);
+
+    // Merge custom results into token/card results
+    for (const [name, cards] of Object.entries(customResults)) {
+        // Add to token results if it's a token name
+        if (nameToTokenInfos.has(name)) {
+            tokenResults[name] = [...(tokenResults[name] || []), ...cards];
+        }
+        // Add to card results if it's a card name
+        if (nameToCardInfos.has(name)) {
+            cardResults[name] = [...(cardResults[name] || []), ...cards];
+        }
+    }
 
     debugLog('[MPC Match] Filters:', {
         favoriteSources: Array.from(favSources),
