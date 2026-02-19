@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(npm run build:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npx tsc:*)",
+      "WebFetch(domain:mtgcardsmith.com)",
+      "Bash(curl:*)",
+      "Bash(ss:*)"
     ]
   }
 }

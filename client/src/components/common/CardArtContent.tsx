@@ -17,6 +17,7 @@ import {
   getMpcAutofillImageUrl,
   extractMpcIdentifierFromImageId,
 } from "@/helpers/mpcAutofillApi";
+import { searchCustomCards, type CardsmithSort } from "@/helpers/customCardsApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
 import { fetchScryfallSets } from "@/helpers/scryfallApi";
 import type { ScryfallCard, PrintInfo } from "../../../../shared/types";
@@ -200,6 +201,35 @@ export function CardArtContent({
     initialPrints,
   });
 
+  // Server-side sort for Cardsmith (newest | oldest | favorites)
+  const [cardsmithSort, setCardsmithSort] = useState<CardsmithSort>("newest");
+
+  // Pagination state for custom sources (cardsmith / cardbuilder) — declared here,
+  // effects that reference mpcData are placed after mpcData is initialized below.
+  const [customPage, setCustomPage] = useState(1);
+  const [extraCustomCards, setExtraCustomCards] = useState<MpcAutofillCard[]>([]);
+  const [customHasMore, setCustomHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  // Reset pagination when query, artSource, or cardsmithSort changes
+  const prevQueryRef = useRef(query);
+  const prevArtSourceRef = useRef(artSource);
+  const prevCardsmithSortRef = useRef(cardsmithSort);
+  useEffect(() => {
+    if (
+      query !== prevQueryRef.current ||
+      artSource !== prevArtSourceRef.current ||
+      cardsmithSort !== prevCardsmithSortRef.current
+    ) {
+      prevQueryRef.current = query;
+      prevArtSourceRef.current = artSource;
+      prevCardsmithSortRef.current = cardsmithSort;
+      setCustomPage(1);
+      setExtraCustomCards([]);
+      setCustomHasMore(false);
+    }
+  }, [query, artSource, cardsmithSort]);
+
   // Helper to detect if the selected art is MPC/custom (for sorting/highlighting in the right source)
   // Uses inferImageSource for unified detection, extractMpcIdentifierFromImageId for ID extraction.
   // For custom cards (cardsmith/cardbuilder), getMpcImageUrl routes them through a proxy endpoint:
@@ -226,6 +256,8 @@ export function CardArtContent({
     cardData: cardTypeLine ? { type_line: cardTypeLine } : undefined,
     // Pass search context to force re-search when switching between custom tabs
     searchContext: artSource,
+    // Server-side sort for Cardsmith
+    cardsmithSort: artSource === "cardsmith" ? cardsmithSort : undefined,
   });
 
   // Filter MPC results by source if specific source selected
@@ -235,24 +267,23 @@ export function CardArtContent({
     // regardless of the generic MPC source filters (which might default to user favorites).
     // So we start from the raw cards list for custom sources.
     if (artSource === "cardsmith") {
-      const allCards = mpcData.cards;
-
-      let cards = allCards.filter(c => c.sourceName === "MTG Cardsmith");
-
+      let cards = mpcData.cards.filter(c => c.sourceName === "MTG Cardsmith");
       // Apply Tag filters if set
       if (mpcData.filters.tagFilters.size > 0) {
         cards = cards.filter(c => c.tags?.some(tag => mpcData.filters.tagFilters.has(tag)));
       }
-      return cards;
+      // Append extra pages (already source-filtered)
+      return [...cards, ...extraCustomCards];
     }
-    
+
     if (artSource === "cardbuilder") {
       let cards = mpcData.cards.filter(c => c.sourceName === "MTG Card Builder");
       // Apply Tag filters if set
       if (mpcData.filters.tagFilters.size > 0) {
         cards = cards.filter(c => c.tags?.some(tag => mpcData.filters.tagFilters.has(tag)));
       }
-      return cards;
+      // Append extra pages (already source-filtered)
+      return [...cards, ...extraCustomCards];
     }
 
     // For standard MPC mode, use the hook's filtered output which respects all filters including source
@@ -264,7 +295,46 @@ export function CardArtContent({
     }
 
     return mpcData.filteredCards;
-  }, [mpcData.cards, mpcData.filteredCards, mpcData.filters, artSource]);
+  }, [mpcData.cards, mpcData.filteredCards, mpcData.filters, artSource, extraCustomCards]);
+
+  // Sync hasMore from page-1 results (mpcData must be initialized before this)
+  useEffect(() => {
+    if (artSource === "cardsmith") {
+      setCustomHasMore(mpcData.hasMoreCardsmith);
+    } else if (artSource === "cardbuilder") {
+      setCustomHasMore(mpcData.hasMoreCardbuilder);
+    } else {
+      setCustomHasMore(false);
+    }
+  }, [artSource, mpcData.hasMoreCardsmith, mpcData.hasMoreCardbuilder]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (isLoadingMore || !customHasMore) return;
+    const nextPage = customPage + 1;
+    const source = artSource === "cardsmith" ? "mtgcardsmith"
+      : artSource === "cardbuilder" ? "mtgcardbuilder"
+      : undefined;
+    if (!source) return;
+
+    setIsLoadingMore(true);
+    try {
+      const sort = artSource === "cardsmith" ? cardsmithSort : undefined;
+      const result = await searchCustomCards(query, source, nextPage, sort);
+      if (result.cards.length > 0) {
+        setExtraCustomCards(prev => [...prev, ...result.cards]);
+        setCustomPage(nextPage);
+        setCustomHasMore(
+          artSource === "cardsmith" ? result.hasMoreCardsmith : result.hasMoreCardbuilder
+        );
+      } else {
+        setCustomHasMore(false);
+      }
+    } catch {
+      setCustomHasMore(false);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, customHasMore, customPage, artSource, query, cardsmithSort]);
 
   // For DFC filtering in prints mode, extract face names and filter
   const uniqueFaces = useMemo(
@@ -606,6 +676,13 @@ export function CardArtContent({
         ? scryfallPrintsData.hasSearched
         : scryfallSearchData.hasSearched
       : mpcData.hasSearched;
+
+  const isSearchLoading =
+    artSource === "scryfall"
+      ? mode === "prints"
+        ? scryfallPrintsData.isLoading
+        : scryfallSearchData.isLoading
+      : mpcData.isLoading;
   // For MPC, check filteredCards (not raw cards) so empty state shows when filters hide everything
   const hasResults =
     artSource === "scryfall"
@@ -957,6 +1034,8 @@ export function CardArtContent({
               groupBySource={mpcGroupBySource}
               onToggleGroupBySource={() => setMpcGroupBySource((prev) => !prev)}
               mode="mpc"
+              cardsmithSort={artSource === "cardsmith" ? cardsmithSort : undefined}
+              setCardsmithSort={artSource === "cardsmith" ? setCardsmithSort : undefined}
             />
           )}
 
@@ -995,7 +1074,20 @@ export function CardArtContent({
             />
           )}
 
-          {hasResults || hasResultsButFiltered ? (
+          {isSearchLoading && !hasResults ? (
+            /* Loading skeleton grid */
+            <div className="p-4">
+              <CardGrid cardSize={cardSize}>
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-full rounded-[2.5mm] bg-gray-200 dark:bg-gray-700 animate-pulse"
+                    style={{ aspectRatio: "63 / 88" }}
+                  />
+                ))}
+              </CardGrid>
+            </div>
+          ) : hasResults || hasResultsButFiltered ? (
             <>
               {hasResultsButFiltered && (
                 <div className="px-6 pt-6 flex flex-col items-center justify-center w-full flex-1 text-gray-400 dark:text-gray-500">
@@ -1271,6 +1363,26 @@ export function CardArtContent({
                       {sortedMpcCards.map(renderMpcCard)}
                     </CardGrid>
                   )}
+                {/* Load more button for custom sources (cardsmith / cardbuilder) */}
+                {(artSource === "cardsmith" || artSource === "cardbuilder") && customHasMore && (
+                  <div className="flex justify-center py-4">
+                    <Button
+                      color="gray"
+                      onClick={handleLoadMore}
+                      disabled={isLoadingMore}
+                      className="min-w-32"
+                    >
+                      {isLoadingMore ? (
+                        <span className="flex items-center gap-2">
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          Carregando...
+                        </span>
+                      ) : (
+                        "Carregar mais"
+                      )}
+                    </Button>
+                  </div>
+                )}
               </div>
             </>
           ) : (

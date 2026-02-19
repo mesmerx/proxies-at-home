@@ -12,6 +12,7 @@ import { SelectDropdown, MultiSelectDropdown } from "./";
 import { useSettingsStore, useUserPreferencesStore } from "@/store";
 import type { MpcAutofillCard } from "@/helpers/mpcAutofillApi";
 import type { MpcFilterState } from "@/hooks/useMpcSearch";
+import type { CardsmithSort } from "@/helpers/customCardsApi";
 import { fetchScryfallSets } from "@/helpers/scryfallApi";
 import type { ScryfallSet } from "../../../../shared/types";
 import { FilterBarShell } from "./FilterBarShell";
@@ -47,6 +48,9 @@ interface MpcFilterProps extends CommonFilterBarProps {
   setAllSourcesCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
   groupBySource: boolean;
   onToggleGroupBySource: () => void;
+  /** Cardsmith-specific server-side sort (only present when artSource === "cardsmith") */
+  cardsmithSort?: CardsmithSort;
+  setCardsmithSort?: (sort: CardsmithSort) => void;
 }
 
 export interface ScryfallFilterProps extends CommonFilterBarProps {
@@ -1059,26 +1063,30 @@ export function CardArtFilterBar(props: CardArtFilterBarProps) {
         <SelectDropdown
           label="Sort"
           buttonText={
-            mode === "mpc"
-              ? (props as MpcFilterProps).filters.sortBy === "name"
-                ? "Name"
-                : (props as MpcFilterProps).filters.sortBy === "dpi"
-                  ? "DPI"
-                  : "Source"
-              : (props as ScryfallFilterProps).sortBy === "name"
-                ? "Set Name"
-                : "Release Date"
+            mode === "mpc" && (props as MpcFilterProps).cardsmithSort
+              ? { newest: "Mais recentes", oldest: "Mais antigas", favorites: "Favoritos" }[(props as MpcFilterProps).cardsmithSort!]
+              : mode === "mpc"
+                ? (props as MpcFilterProps).filters.sortBy === "name"
+                  ? "Name"
+                  : (props as MpcFilterProps).filters.sortBy === "dpi"
+                    ? "DPI"
+                    : "Source"
+                : (props as ScryfallFilterProps).sortBy === "name"
+                  ? "Set Name"
+                  : "Release Date"
           }
           selectedLabel={
-            mode === "mpc"
-              ? (props as MpcFilterProps).filters.sortBy === "name"
-                ? "Name"
-                : (props as MpcFilterProps).filters.sortBy === "dpi"
-                  ? "DPI"
-                  : "Source"
-              : (props as ScryfallFilterProps).sortBy === "name"
-                ? "Set Name"
-                : "Release Date"
+            mode === "mpc" && (props as MpcFilterProps).cardsmithSort
+              ? { newest: "Mais recentes", oldest: "Mais antigas", favorites: "Favoritos" }[(props as MpcFilterProps).cardsmithSort!]
+              : mode === "mpc"
+                ? (props as MpcFilterProps).filters.sortBy === "name"
+                  ? "Name"
+                  : (props as MpcFilterProps).filters.sortBy === "dpi"
+                    ? "DPI"
+                    : "Source"
+                : (props as ScryfallFilterProps).sortBy === "name"
+                  ? "Set Name"
+                  : "Release Date"
           }
           singleSelectMode
           disableFavorites
@@ -1086,72 +1094,86 @@ export function CardArtFilterBar(props: CardArtFilterBarProps) {
           onToggle={() => setShowSortDropdown(!showSortDropdown)}
           onClose={() => setShowSortDropdown(false)}
         >
-          {(mode === "mpc"
-            ? [
-              { value: "name", label: "Name" },
-              { value: "dpi", label: "DPI" },
-            ]
-            : [
-              { value: "released", label: "Release Date" },
-              { value: "name", label: "Set Name" },
-            ]
+          {(mode === "mpc" && (props as MpcFilterProps).cardsmithSort !== undefined
+            ? ([
+                { value: "newest", label: "Mais recentes" },
+                { value: "favorites", label: "Favoritos" },
+                { value: "oldest", label: "Mais antigas" },
+              ] as { value: CardsmithSort; label: string }[])
+            : mode === "mpc"
+              ? [
+                  { value: "name", label: "Name" },
+                  { value: "dpi", label: "DPI" },
+                ]
+              : [
+                  { value: "released", label: "Release Date" },
+                  { value: "name", label: "Set Name" },
+                ]
           ).map((option) => (
             <div
               key={option.value}
               className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-600"
             >
-              {/* Favorite Star Button */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (mode === "mpc") {
-                    setFavoriteMpcSort(
-                      favoriteMpcSort === option.value
-                        ? null
-                        : (option.value as "name" | "dpi")
-                    );
-                  } else {
-                    // Scryfall Favoriting
-                    const currentFav = preferences?.favoriteScryfallSort;
-                    setFavoriteScryfallSort(
-                      currentFav === option.value ? null : (option.value as "released" | "name")
-                    );
+              {/* Favorite Star — hidden for Cardsmith server-side sort */}
+              {!(mode === "mpc" && (props as MpcFilterProps).cardsmithSort !== undefined) && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (mode === "mpc") {
+                      setFavoriteMpcSort(
+                        favoriteMpcSort === option.value
+                          ? null
+                          : (option.value as "name" | "dpi")
+                      );
+                    } else {
+                      const currentFav = preferences?.favoriteScryfallSort;
+                      setFavoriteScryfallSort(
+                        currentFav === option.value ? null : (option.value as "released" | "name")
+                      );
+                    }
+                  }}
+                  className="p-0.5 hover:text-yellow-500 transition-colors"
+                  title={
+                    (mode === "mpc"
+                      ? favoriteMpcSort
+                      : preferences?.favoriteScryfallSort) === option.value
+                      ? "Remove from favorites"
+                      : "Set as favorite"
                   }
-                }}
-                className="p-0.5 hover:text-yellow-500 transition-colors"
-                title={
-                  (mode === "mpc"
-                    ? favoriteMpcSort
-                    : preferences?.favoriteScryfallSort) === option.value
-                    ? "Remove from favorites"
-                    : "Set as favorite"
-                }
-              >
-                <Star
-                  className={`w-3.5 h-3.5 ${(mode === "mpc"
-                    ? favoriteMpcSort
-                    : preferences?.favoriteScryfallSort) === option.value
-                    ? "fill-yellow-400 text-yellow-400"
-                    : "text-gray-400"
-                    }`}
-                />
-              </button>
+                >
+                  <Star
+                    className={`w-3.5 h-3.5 ${(mode === "mpc"
+                      ? favoriteMpcSort
+                      : preferences?.favoriteScryfallSort) === option.value
+                      ? "fill-yellow-400 text-yellow-400"
+                      : "text-gray-400"
+                      }`}
+                  />
+                </button>
+              )}
 
               <button
                 type="button"
                 onClick={() => {
-                  if (mode === "mpc") {
+                  if (mode === "mpc" && (props as MpcFilterProps).cardsmithSort !== undefined) {
+                    (props as MpcFilterProps).setCardsmithSort?.(option.value as CardsmithSort);
+                  } else if (mode === "mpc") {
                     props.setSortBy(option.value as "name" | "dpi");
                   } else {
                     props.setSortBy(option.value as "name" | "released");
                   }
                   setShowSortDropdown(false);
                 }}
-                className={`flex-1 text-left text-sm transition-colors whitespace-nowrap ${(mode === "mpc"
-                  ? (props as MpcFilterProps).filters.sortBy
-                  : (props as ScryfallFilterProps).sortBy) === option.value
-                  ? "text-blue-600 dark:text-blue-400"
-                  : "text-gray-900 dark:text-white"
+                className={`flex-1 text-left text-sm transition-colors whitespace-nowrap ${
+                  mode === "mpc" && (props as MpcFilterProps).cardsmithSort !== undefined
+                    ? (props as MpcFilterProps).cardsmithSort === option.value
+                      ? "text-blue-600 dark:text-blue-400"
+                      : "text-gray-900 dark:text-white"
+                    : (mode === "mpc"
+                        ? (props as MpcFilterProps).filters.sortBy
+                        : (props as ScryfallFilterProps).sortBy) === option.value
+                      ? "text-blue-600 dark:text-blue-400"
+                      : "text-gray-900 dark:text-white"
                   }`}
               >
                 {option.label}

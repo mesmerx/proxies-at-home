@@ -26,15 +26,22 @@ interface CustomCard {
     url: string;
 }
 
+interface PagedResults {
+    cards: CustomCard[];
+    hasMore: boolean;
+}
+
 /**
- * Search MTG Cardsmith
+ * Search MTG Cardsmith using the AJAX gallery loader endpoint.
+ * This endpoint returns card HTML + pagination (total pages) at the bottom.
  */
-async function searchMtgCardsmith(query: string): Promise<CustomCard[]> {
-    const searchUrl = `https://mtgcardsmith.com/search?q=${encodeURIComponent(query)}`;
-    
+async function searchMtgCardsmith(query: string, page: number = 1, sort: "newest" | "oldest" | "favorites" = "newest"): Promise<PagedResults> {
+    const searchUrl = `https://mtgcardsmith.com/wp-content/themes/hello-elementor-child/ajax/ajax-gallery-loader.php?page=${page}&search=${encodeURIComponent(query)}&type=&mana=&sort=${sort}`;
+
     const { data } = await axios.get(searchUrl, {
         headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Referer": "https://mtgcardsmith.com/gallery",
         },
         timeout: 10000
     });
@@ -42,50 +49,60 @@ async function searchMtgCardsmith(query: string): Promise<CustomCard[]> {
     const $ = cheerio.load(data);
     const results: CustomCard[] = [];
 
-    $(".card-item").each((_: number, element: unknown) => {
+    // The ajax-gallery-loader.php endpoint returns div.col_list elements
+    $(".col_list").each((_: number, element: unknown) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const $el = $(element as any);
-        const $img = $el.find("img.card");
-        const $link = $el.find(".panel > a");
-        const $title = $el.find("h6.subheader");
-        const $author = $el.find("cite > a");
 
-        if ($img.length && $title.length) {
-            let imageUrl = $img.attr("src") || "";
-            if (imageUrl.startsWith("/")) {
-                imageUrl = `https://mtgcardsmith.com${imageUrl}`;
-            }
-            
-            // Try to get high-res image from onclick attribute
-            const onclick = $el.find(".addToPrintOrder").attr("onclick");
-            if (onclick) {
-                const match = onclick.match(/addToList\(this,`([^`]+)`\)/);
-                if (match && match[1]) {
-                    imageUrl = match[1];
-                }
-            }
+        // Title: in h3 > a
+        const name = $el.find("h3 a").first().text().trim() ||
+                     $el.find("h3").first().text().trim() ||
+                     "Untitled Card";
 
-            const url = $link.attr("href") || "";
-            const fullUrl = url.startsWith("/") ? `https://mtgcardsmith.com${url}` : url;
+        // Author: in h4 > a with /user/ href
+        const $authorLink = $el.find("h4 a[href*='/user/']").first();
+        const author = $authorLink.text().trim();
 
-            results.push({
-                id: `mtgcardsmith-${url.split("/").pop() || Math.random().toString(36).substr(2, 9)}`,
-                name: $title.text().trim(),
-                imageUrl,
-                source: "mtgcardsmith",
-                author: $author.text().trim(),
-                url: fullUrl
-            });
-        }
+        // Image: prefer data-full (high-res) over src
+        const $img = $el.find("img").first();
+        let imageUrl = $img.attr("data-full") || $img.attr("src") || $img.attr("data-src") || "";
+        if (imageUrl.startsWith("/")) imageUrl = `https://mtgcardsmith.com${imageUrl}`;
+
+        if (!imageUrl) return;
+
+        // Try to extract card slug from onclick="openView('slug')" to build real URL
+        const onclick = $el.find("h3 a, img").first().attr("onclick") || "";
+        const slugMatch = onclick.match(/openView\('([^']+)'\)/);
+        const slug = slugMatch?.[1];
+        const cardUrl = slug ? `https://mtgcardsmith.com/view/${slug}` : imageUrl;
+
+        results.push({
+            id: `mtgcardsmith-${slug || imageUrl.split("/").pop()?.split(".")[0] || Math.random().toString(36).substr(2, 9)}`,
+            name,
+            imageUrl,
+            source: "mtgcardsmith",
+            author,
+            url: cardUrl,
+        });
     });
 
-    return results;
+    // Parse total pages from pagination — the response ends with numbered page links.
+    // Extract the highest page number from any link or span text.
+    let totalPages = page;
+    $("a, span").each((_: number, el: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const text = ($(el as any).text() || "").trim();
+        const num = parseInt(text, 10);
+        if (!isNaN(num) && num > totalPages) totalPages = num;
+    });
+
+    return { cards: results, hasMore: page < totalPages };
 }
 
 /**
- * Search MTG Card Builder
+ * Search MTG Card Builder with pagination support
  */
-async function searchMtgCardBuilder(query: string): Promise<CustomCard[]> {
+async function searchMtgCardBuilder(query: string, page: number = 1): Promise<PagedResults> {
     const url = "https://mtgcardbuilder.com/wp-admin/admin-ajax.php";
 
     const params = new URLSearchParams();
@@ -93,7 +110,7 @@ async function searchMtgCardBuilder(query: string): Promise<CustomCard[]> {
     params.append('order', 'recent');
     params.append('nsfw', '0');
     params.append('other', '0');
-    params.append('cpage', '1');
+    params.append('cpage', String(page));
     params.append('action', 'builder_ajax');
     params.append('method', 'search_gallery_cards');
 
@@ -125,7 +142,10 @@ async function searchMtgCardBuilder(query: string): Promise<CustomCard[]> {
         });
     }
 
-    return results;
+    // Card Builder returns pages of 30; if we got a full page, assume there are more
+    const hasMore = results.length >= 30;
+
+    return { cards: results, hasMore };
 }
 
 // Wrapped versions for rate limiting
@@ -148,39 +168,54 @@ function mapToMpcCard(card: CustomCard): MpcCard {
     };
 }
 
+interface SearchResult {
+    cards: MpcCard[];
+    hasMoreCardsmith: boolean;
+    hasMoreCardbuilder: boolean;
+}
+
 /**
  * Perform a search for a single query (cached or fresh)
  */
-async function performSearch(query: string, sourceFilter?: string): Promise<MpcCard[]> {
+async function performSearch(query: string, sourceFilter?: string, page: number = 1, cardsmithSort: "newest" | "oldest" | "favorites" = "newest"): Promise<SearchResult> {
     const normalizedQuery = query.toLowerCase().trim();
-    // Cache key includes source filter if present to distinguish partial vs full searches
-    // v2: Bumped cache version to clear potentially poisoned empty results
-    const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:v2`;
+    // Cache key includes source filter, page number, and cardsmith sort
+    // v3: Bumped cache version to clear results cached with wrong selectors (col_list fix)
+    const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p${page}:s${cardsmithSort}:v3`;
 
-    // Check cache
-    const cached = getCachedMpcSearch(cacheKey, "CUSTOM");
-    if (cached) {
-        return cached;
+    // Check cache (only for page 1 — subsequent pages are not cached to avoid stale pagination)
+    if (page === 1) {
+        const cached = getCachedMpcSearch(cacheKey, "CUSTOM");
+        if (cached && cached.length > 0) {
+            // Cached results don't have hasMore metadata, so use count heuristic
+            const csCards = cached.filter(c => c.sourceName === "MTG Cardsmith");
+            const cbCards = cached.filter(c => c.sourceName === "MTG Card Builder");
+            return {
+                cards: cached,
+                hasMoreCardsmith: csCards.length >= 30,
+                hasMoreCardbuilder: cbCards.length >= 30,
+            };
+        }
     }
-    
-    let cardsmithPromise: Promise<CustomCard[]> | undefined;
-    let cardbuilderPromise: Promise<CustomCard[]> | undefined;
+
+    let cardsmithPromise: Promise<PagedResults> | undefined;
+    let cardbuilderPromise: Promise<PagedResults> | undefined;
 
     if (!sourceFilter || sourceFilter === 'mtgcardsmith') {
-        cardsmithPromise = wrappedSearchCardsmith(query);
-    }
-    
-    if (!sourceFilter || sourceFilter === 'mtgcardbuilder') {
-        cardbuilderPromise = wrappedSearchCardBuilder(query);
+        cardsmithPromise = wrappedSearchCardsmith(query, page, cardsmithSort);
     }
 
-    let cardsmithResults: CustomCard[] = [];
-    let cardbuilderResults: CustomCard[] = [];
+    if (!sourceFilter || sourceFilter === 'mtgcardbuilder') {
+        cardbuilderPromise = wrappedSearchCardBuilder(query, page);
+    }
+
+    let cardsmithResult: PagedResults = { cards: [], hasMore: false };
+    let cardbuilderResult: PagedResults = { cards: [], hasMore: false };
     let partialFailure = false;
 
     if (cardsmithPromise) {
         try {
-            cardsmithResults = await cardsmithPromise;
+            cardsmithResult = await cardsmithPromise;
         } catch (error) {
             console.error(`[CustomCards] Cardsmith search failed for "${query}":`, error);
             partialFailure = true;
@@ -189,22 +224,25 @@ async function performSearch(query: string, sourceFilter?: string): Promise<MpcC
 
     if (cardbuilderPromise) {
         try {
-            cardbuilderResults = await cardbuilderPromise;
+            cardbuilderResult = await cardbuilderPromise;
         } catch (error) {
             console.error(`[CustomCards] CardBuilder search failed for "${query}":`, error);
             partialFailure = true;
         }
     }
 
-    const allResults = [...cardsmithResults, ...cardbuilderResults].map(mapToMpcCard);
-    
-    // Cache results ONLY if no partial failure occurred.
-    // This prevents caching incomplete results (e.g. if one source timed out).
-    if (!partialFailure) {
+    const allResults = [...cardsmithResult.cards, ...cardbuilderResult.cards].map(mapToMpcCard);
+
+    // Cache page 1 results only, and only if no partial failure occurred.
+    if (page === 1 && !partialFailure) {
         cacheMpcSearch(cacheKey, "CUSTOM", allResults);
     }
-    
-    return allResults;
+
+    return {
+        cards: allResults,
+        hasMoreCardsmith: cardsmithResult.hasMore,
+        hasMoreCardbuilder: cardbuilderResult.hasMore,
+    };
 }
 
 // Track background jobs
@@ -212,23 +250,29 @@ const activeJobs = new Set<string>();
 
 /**
  * GET /api/custom/search
- * Single card search
+ * Single card search with optional pagination
  */
 router.get("/search", async (req: Request, res: Response) => {
     const q = req.query.q as string;
     const source = req.query.source as string | undefined; // 'mtgcardsmith' or 'mtgcardbuilder'
+    const page = parseInt(req.query.page as string) || 1;
+    const rawSort = req.query.sort as string | undefined;
+    const cardsmithSort: "newest" | "oldest" | "favorites" =
+        rawSort === "oldest" || rawSort === "favorites" ? rawSort : "newest";
 
     if (!q) {
         return res.status(400).json({ error: "Missing q parameter" });
     }
 
     try {
-        const results = await performSearch(q, source);
-        
+        const result = await performSearch(q, source, page, cardsmithSort);
+
         return res.json({
             object: "list",
-            total_cards: results.length,
-            data: results
+            total_cards: result.cards.length,
+            data: result.cards,
+            hasMoreCardsmith: result.hasMoreCardsmith,
+            hasMoreCardbuilder: result.hasMoreCardbuilder,
         });
     } catch (error) {
         console.error("[CustomCards] Search failed:", error);
@@ -243,7 +287,7 @@ router.get("/search", async (req: Request, res: Response) => {
  */
 router.post("/batch-search", async (req: Request, res: Response) => {
     const { queries, source: sourceFilter } = req.body;
-    
+
     if (!queries || !Array.isArray(queries)) {
         return res.status(400).json({ error: "Missing or invalid queries array" });
     }
@@ -254,19 +298,19 @@ router.post("/batch-search", async (req: Request, res: Response) => {
     // Check cache for all queries
     for (const query of queries) {
         const normalizedQuery = query.toLowerCase().trim();
-        const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}`;
+        const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p1:snewest:v3`;
         const cached = getCachedMpcSearch(cacheKey, "CUSTOM");
-        
+
         if (cached) {
             results[query] = cached;
         } else {
             // Queue for background processing
             queued.push(query);
-            
+
             // Start background job if not already running
             if (!activeJobs.has(cacheKey)) {
                 activeJobs.add(cacheKey);
-                performSearch(query, sourceFilter)
+                performSearch(query, sourceFilter, 1)
                     .finally(() => {
                         activeJobs.delete(cacheKey);
                     });
