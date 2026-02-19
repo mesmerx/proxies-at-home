@@ -600,7 +600,7 @@ export function ArtworkModal() {
    * Handle MPC Autofill art selection
    * Uses ImportOrchestrator to resolve details/enrichment needs
    */
-  async function handleSelectMpcArt(card: MpcAutofillCard) {
+  async function handleSelectMpcArt(card: MpcAutofillCard, keepOriginalName: boolean = false) {
     debugLog("[ArtworkModal] handleSelectMpcArt:", {
       cardIdentifier: card.identifier,
       cardName: card.name,
@@ -646,7 +646,7 @@ export function ArtworkModal() {
       if (resolved && resolved.imageId) {
         await applyArtworkToCards({
           targetImageId: resolved.imageId,
-          cardName: resolved.name,
+          cardName: keepOriginalName ? undefined : resolved.name,
           hasBuiltInBleed: resolved.hasBuiltInBleed,
           needsEnrichment: resolved.needsEnrichment,
           cardMetadata: {
@@ -1283,7 +1283,7 @@ export function ArtworkModal() {
               onSelectCardback={handleSelectCardback}
               onSetAsDefaultCardback={handleSetAsDefaultCardback}
               onSelectArtwork={handleSelectArtwork}
-              onSelectMpcArt={handleSelectMpcArt}
+              onSelectMpcArt={(card) => handleSelectMpcArt(card, true)}
               onClose={closeModal}
               onRequestDelete={handleRequestDelete}
               onExecuteDelete={handleExecuteDelete}
