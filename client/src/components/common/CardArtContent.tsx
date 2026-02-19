@@ -200,13 +200,23 @@ export function CardArtContent({
     initialPrints,
   });
 
-  // Helper to detect if the selected art is MPC (for sorting/highlighting in the right source)
-  // Uses inferImageSource for unified detection, extractMpcIdentifierFromImageId for ID extraction
+  // Helper to detect if the selected art is MPC/custom (for sorting/highlighting in the right source)
+  // Uses inferImageSource for unified detection, extractMpcIdentifierFromImageId for ID extraction.
+  // For custom cards (cardsmith/cardbuilder), getMpcImageUrl routes them through a proxy endpoint:
+  //   imageId stored = "/api/cards/images/proxy?url=ENCODED_ORIGINAL_URL"
+  // We need to decode it back to the original URL to match card.identifier.
   const selectedMpcId = useMemo(() => {
     if (!selectedArtId) return undefined;
     const source = inferImageSource(selectedArtId);
-    if (source !== "mpc") return undefined;
-    return extractMpcIdentifierFromImageId(selectedArtId) ?? undefined;
+    if (source === "mpc") {
+      return extractMpcIdentifierFromImageId(selectedArtId) ?? undefined;
+    }
+    // Custom card proxy URLs: extract and decode the original URL to match card.identifier
+    if (source === null && selectedArtId.includes("/api/cards/images/proxy?url=")) {
+      const encoded = selectedArtId.split("url=")[1]?.split("&")[0];
+      return encoded ? decodeURIComponent(encoded) : undefined;
+    }
+    return undefined;
   }, [selectedArtId]);
   // MPC Search Hooks - sorting is done in CardArtContent using mpcSortKey for consistency
   const isMpcLike = artSource === "mpc" || artSource === "cardsmith" || artSource === "cardbuilder";
