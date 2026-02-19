@@ -510,10 +510,22 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
         return res.status(502).json({ error: "Upstream is a 0-byte image" });
       }
 
-      const ct = String(response.headers["content-type"] || "").toLowerCase();
+      let ct = String(response.headers["content-type"] || "").toLowerCase();
       if (!ct.startsWith("image/")) {
-        console.error(`[Proxy] Upstream returned non-image content-type ${ct} for ${fetchUrl}`);
-        return res.status(502).json({ error: "Upstream not image", ct });
+        // Some S3 buckets (e.g. Wasabi) serve images with binary/octet-stream.
+        // If the URL has a known image extension, trust it and set the correct type.
+        const extMatch = originalUrl.match(/\.(png|jpg|jpeg|webp|gif)(?:[?#].*)?$/i);
+        if ((ct === "binary/octet-stream" || ct === "application/octet-stream") && extMatch) {
+          const extToMime: Record<string, string> = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            webp: "image/webp", gif: "image/gif",
+          };
+          ct = extToMime[extMatch[1].toLowerCase()] || "image/png";
+          console.log(`[Proxy] Overriding octet-stream to ${ct} based on URL extension for ${fetchUrl}`);
+        } else {
+          console.error(`[Proxy] Upstream returned non-image content-type ${ct} for ${fetchUrl}`);
+          return res.status(502).json({ error: "Upstream not image", ct });
+        }
       }
 
       console.log(`[Proxy] Successfully fetched ${response.data.length} bytes from ${fetchUrl}`);

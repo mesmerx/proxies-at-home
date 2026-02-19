@@ -6,7 +6,8 @@
       "Bash(npx tsc:*)",
       "WebFetch(domain:mtgcardsmith.com)",
       "Bash(curl:*)",
-      "Bash(ss:*)"
+      "Bash(ss:*)",
+      "Bash(python3:*)"
     ]
   }
 }

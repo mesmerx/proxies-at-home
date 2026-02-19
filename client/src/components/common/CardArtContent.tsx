@@ -226,7 +226,7 @@ export function CardArtContent({
       prevCardsmithSortRef.current = cardsmithSort;
       setCustomPage(1);
       setExtraCustomCards([]);
-      setCustomHasMore(false);
+      // customHasMore is derived from mpcData on page 1, no need to reset here
     }
   }, [query, artSource, cardsmithSort]);
 
@@ -297,19 +297,16 @@ export function CardArtContent({
     return mpcData.filteredCards;
   }, [mpcData.cards, mpcData.filteredCards, mpcData.filters, artSource, extraCustomCards]);
 
-  // Sync hasMore from page-1 results (mpcData must be initialized before this)
-  useEffect(() => {
-    if (artSource === "cardsmith") {
-      setCustomHasMore(mpcData.hasMoreCardsmith);
-    } else if (artSource === "cardbuilder") {
-      setCustomHasMore(mpcData.hasMoreCardbuilder);
-    } else {
-      setCustomHasMore(false);
-    }
-  }, [artSource, mpcData.hasMoreCardsmith, mpcData.hasMoreCardbuilder]);
+  // On page 1, derive hasMore directly from mpcData to avoid stale state issues.
+  // On subsequent pages, use customHasMore which is updated by handleLoadMore.
+  const effectiveHasMore = customPage === 1
+    ? (artSource === "cardsmith" ? mpcData.hasMoreCardsmith
+      : artSource === "cardbuilder" ? mpcData.hasMoreCardbuilder
+      : false)
+    : customHasMore;
 
   const handleLoadMore = useCallback(async () => {
-    if (isLoadingMore || !customHasMore) return;
+    if (isLoadingMore || !effectiveHasMore) return;
     const nextPage = customPage + 1;
     const source = artSource === "cardsmith" ? "mtgcardsmith"
       : artSource === "cardbuilder" ? "mtgcardbuilder"
@@ -334,7 +331,7 @@ export function CardArtContent({
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, customHasMore, customPage, artSource, query, cardsmithSort]);
+  }, [isLoadingMore, effectiveHasMore, customPage, artSource, query, cardsmithSort]);
 
   // For DFC filtering in prints mode, extract face names and filter
   const uniqueFaces = useMemo(
@@ -1364,7 +1361,7 @@ export function CardArtContent({
                     </CardGrid>
                   )}
                 {/* Load more button for custom sources (cardsmith / cardbuilder) */}
-                {(artSource === "cardsmith" || artSource === "cardbuilder") && customHasMore && (
+                {(artSource === "cardsmith" || artSource === "cardbuilder") && effectiveHasMore && (
                   <div className="flex justify-center py-4">
                     <Button
                       color="gray"

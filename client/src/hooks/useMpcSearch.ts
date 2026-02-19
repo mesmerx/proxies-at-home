@@ -156,8 +156,10 @@ export function useMpcSearch(
 
                 const merged = [...tokenResults, ...cardResults, ...cardsmithResult.cards, ...cardbuilderResult.cards];
                 setCards(merged);
-                setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
-                setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
+                // Only update hasMore for sources that were actually fetched,
+                // so switching context doesn't clear state from other sources.
+                if (fetchCardsmith) setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
+                if (fetchCardBuilder) setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
             } else {
                 // Always search custom cards when searching for cards (not tokens)
                 const shouldSearchCustom = effectiveCardType === 'CARD';
@@ -174,8 +176,10 @@ export function useMpcSearch(
 
                 const merged = [...mpcResults, ...cardsmithResult.cards, ...cardbuilderResult.cards];
                 setCards(merged);
-                setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
-                setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
+                // Only update hasMore for sources that were actually fetched,
+                // so switching context doesn't clear state from other sources.
+                if (fetchCardsmith) setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
+                if (fetchCardBuilder) setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
             }
         } catch (err) {
             console.error("MPC search error:", err);
@@ -205,13 +209,15 @@ export function useMpcSearch(
 
         if (!autoSearch) return;
 
-        // Note: We removed the `query === lastSearchedName.current` check here because it prevented
-        // re-searching when only the context (tab) changed but the query remained the same.
-        // The `performSearch` function handles deduplication internally via `lastSearchParams`.
+        // Use a debounce only when the query itself changed (user is typing).
+        // When only the context/tab changes with the same query, search immediately
+        // so switching tabs doesn't cause a visible delay before results appear.
+        const queryChanged = query !== lastSearchedName.current;
+        const delay = queryChanged ? 500 : 0;
 
         const timeoutId = setTimeout(() => {
             performSearch();
-        }, 500);
+        }, delay);
 
         return () => clearTimeout(timeoutId);
     }, [autoSearch, query, performSearch]);
