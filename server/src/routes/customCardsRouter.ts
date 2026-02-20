@@ -99,6 +99,8 @@ async function searchMtgCardsmith(query: string, page: number = 1, sort: "newest
     return { cards: results, hasMore: page < totalPages };
 }
 
+const CARD_BUILDER_PAGE_SIZE = 24;
+
 /**
  * Search MTG Card Builder with pagination support
  */
@@ -145,7 +147,6 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
     // Use total from API response for accurate pagination.
     // The API returns ~24 items per page; hasMore if there are results beyond current page.
     const totalResults = typeof data?.total === 'number' ? data.total : 0;
-    const CARD_BUILDER_PAGE_SIZE = 24;
     const hasMore = totalResults > 0
         ? page * CARD_BUILDER_PAGE_SIZE < totalResults
         : results.length >= CARD_BUILDER_PAGE_SIZE;
@@ -198,7 +199,7 @@ async function performSearch(query: string, sourceFilter?: string, page: number 
             return {
                 cards: cached,
                 hasMoreCardsmith: csCards.length >= 30,
-                hasMoreCardbuilder: cbCards.length >= 30,
+                hasMoreCardbuilder: cbCards.length >= CARD_BUILDER_PAGE_SIZE,
             };
         }
     }
