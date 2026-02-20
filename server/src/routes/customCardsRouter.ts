@@ -142,8 +142,13 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
         });
     }
 
-    // Card Builder returns pages of 30; if we got a full page, assume there are more
-    const hasMore = results.length >= 30;
+    // Use total from API response for accurate pagination.
+    // The API returns ~24 items per page; hasMore if there are results beyond current page.
+    const totalResults = typeof data?.total === 'number' ? data.total : 0;
+    const CARD_BUILDER_PAGE_SIZE = 24;
+    const hasMore = totalResults > 0
+        ? page * CARD_BUILDER_PAGE_SIZE < totalResults
+        : results.length >= CARD_BUILDER_PAGE_SIZE;
 
     return { cards: results, hasMore };
 }
