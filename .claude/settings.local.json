@@ -7,7 +7,10 @@
       "WebFetch(domain:mtgcardsmith.com)",
       "Bash(curl:*)",
       "Bash(ss:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(git -C /home/mesmer/proxies-at-home show --name-only e83000d1)",
+      "Bash(git -C /home/mesmer/proxies-at-home show --name-only 0815e7ba)",
+      "Bash(git -C /home/mesmer/proxies-at-home show 0815e7ba -- client/src/components/common/CardArtContent.tsx)"
     ]
   }
 }

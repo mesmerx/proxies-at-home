@@ -99,7 +99,6 @@ async function searchMtgCardsmith(query: string, page: number = 1, sort: "newest
     return { cards: results, hasMore: page < totalPages };
 }
 
-const CARD_BUILDER_PAGE_SIZE = 24;
 
 /**
  * Search MTG Card Builder with pagination support
@@ -144,12 +143,10 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
         });
     }
 
-    // Use total from API response for accurate pagination.
-    // The API returns ~24 items per page; hasMore if there are results beyond current page.
-    const totalResults = typeof data?.total === 'number' ? data.total : 0;
-    const hasMore = totalResults > 0
-        ? page * CARD_BUILDER_PAGE_SIZE < totalResults
-        : results.length >= CARD_BUILDER_PAGE_SIZE;
+    // Don't rely on data.total — MTGCardBuilder may return the current page count
+    // rather than the overall total, making page * PAGE_SIZE < total always false.
+    // Instead, assume more pages exist whenever we got any results on this page.
+    const hasMore = results.length > 0;
 
     return { cards: results, hasMore };
 }
@@ -193,13 +190,15 @@ async function performSearch(query: string, sourceFilter?: string, page: number 
     if (page === 1) {
         const cached = getCachedMpcSearch(cacheKey, "CUSTOM");
         if (cached && cached.length > 0) {
-            // Cached results don't have hasMore metadata, so use count heuristic
+            // Cached results don't have hasMore metadata.
+            // Assume more pages exist whenever there are any results from that source
+            // (consistent with the live-fetch fallback; one extra empty-page click is acceptable).
             const csCards = cached.filter(c => c.sourceName === "MTG Cardsmith");
             const cbCards = cached.filter(c => c.sourceName === "MTG Card Builder");
             return {
                 cards: cached,
-                hasMoreCardsmith: csCards.length >= 30,
-                hasMoreCardbuilder: cbCards.length >= CARD_BUILDER_PAGE_SIZE,
+                hasMoreCardsmith: csCards.length > 0,
+                hasMoreCardbuilder: cbCards.length > 0,
             };
         }
     }

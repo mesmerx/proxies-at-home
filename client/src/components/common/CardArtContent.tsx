@@ -320,9 +320,10 @@ export function CardArtContent({
       if (result.cards.length > 0) {
         setExtraCustomCards(prev => [...prev, ...result.cards]);
         setCustomPage(nextPage);
-        setCustomHasMore(
-          artSource === "cardsmith" ? result.hasMoreCardsmith : result.hasMoreCardbuilder
-        );
+        // Show button whenever we got results — the next empty page will hide it.
+        // Don't rely on the server's hasMore because the `total` field from
+        // MTGCardBuilder can be inaccurate, causing the button to vanish prematurely.
+        setCustomHasMore(true);
       } else {
         setCustomHasMore(false);
       }
