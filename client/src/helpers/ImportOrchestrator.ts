@@ -250,7 +250,8 @@ export class ImportOrchestrator {
                     else if (intent.mpcId) {
                         const url = getMpcAutofillImageUrl(intent.mpcId);
                         imageId = await addRemoteImage([url], quantity);
-                        hasBuiltInBleed = true;
+                        // Custom cards (Card Smith/Builder) use full URLs as identifiers and don't have built-in bleed.
+                        hasBuiltInBleed = !/^https?:\/\//.test(intent.mpcId);
 
                         // DFC & Metadata Enrichment - use cached batch result
                         const cleanedName = parseLineToIntent(intent.name).name;
@@ -498,6 +499,9 @@ export class ImportOrchestrator {
             const imageId = await addRemoteImage([url], quantity);
 
             // Start with base MPC card
+            // Custom cards (Card Smith/Builder) use full URLs as identifiers and don't have built-in bleed.
+            // Real MPC Autofill cards use alphanumeric Google Drive IDs.
+            const mpcIdIsUrl = /^https?:\/\//.test(intent.mpcId);
             const baseCard = {
                 name: intent.name,
                 set: intent.set,
@@ -505,7 +509,7 @@ export class ImportOrchestrator {
                 lang: 'en',
                 isUserUpload: false, // MPC art, not custom upload
                 imageId: imageId,
-                hasBuiltInBleed: true,
+                hasBuiltInBleed: !mpcIdIsUrl,
                 needsEnrichment: true, // Auto-enrich later if immediate lookup fails
                 isToken: intent.isToken,
                 category: intent.category,

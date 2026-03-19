@@ -159,11 +159,13 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         const imageUrl = getMpcAutofillImageUrl(info.mpcIdentifier!);
         const imageId = await addRemoteImage([imageUrl], instances.length);
 
+        // Custom cards (Card Smith/Builder) use full URLs as identifiers and don't have built-in bleed.
+        const mpcIdIsUrl = /^https?:\/\//.test(info.mpcIdentifier!);
         const cardsToAdd = instances.map(instance => createCardOption({
             name: instance.name,
             lang: language,
             imageId,
-            hasBuiltInBleed: true,
+            hasBuiltInBleed: !mpcIdIsUrl,
             needsEnrichment: true,
             category: instance.category,
             // For MPC cards, merge darken-off defaults with any existing overrides

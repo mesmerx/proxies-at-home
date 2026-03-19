@@ -274,9 +274,13 @@ export function parseMpcCardLogic(mpcCard: MpcAutofillCard, originalCardName?: s
     // Use parsed name, or fallback to MPC name, or finally original card name
     const cardName = baseNameMatch ? baseNameMatch[1].trim() : (mpcName || originalCardName || "");
 
+    // Custom cards (Card Smith/Builder) use full URLs as identifiers and don't have built-in bleed.
+    // Real MPC Autofill cards use alphanumeric Google Drive IDs.
+    const isCustomCard = /^https?:\/\//.test(mpcCard.identifier);
+
     return {
         name: cardName,
-        hasBuiltInBleed: true,
+        hasBuiltInBleed: !isCustomCard,
         needsEnrichment: true
     };
 }
