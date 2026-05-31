@@ -18,6 +18,7 @@ import {
 import { undoableChangeCardback } from "@/helpers/undoableActions";
 import { ArtworkBleedSettings } from "../CardEditorModal/ArtworkBleedSettings";
 import { ResponsiveModal, ArtSourceToggle, TabBar } from "../common";
+import type { ArtSource } from "../common/ArtSourceToggle";
 import { ArtworkTabContent } from "./ArtworkTabContent";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Button, Checkbox, Label } from "flowbite-react";
@@ -74,7 +75,7 @@ export function ArtworkModal() {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingDeleteName, setPendingDeleteName] = useState<string>("");
   const [dontShowAgain, setDontShowAgain] = useState(false);
-  const [artSource, setArtSource] = useState<"scryfall" | "mpc">("scryfall");
+  const [artSource, setArtSource] = useState<ArtSource>("scryfall");
   const [mpcFiltersCollapsed, setMpcFiltersCollapsed] = useState(true);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState("");

@@ -6,11 +6,13 @@ export interface CustomCardsSearchResult {
     cards: MpcAutofillCard[];
     hasMoreCardsmith: boolean;
     hasMoreCardbuilder: boolean;
+    hasMoreMythicBlackCore: boolean;
 }
 
 export type CardsmithSort = "newest" | "oldest" | "favorites";
+export type CustomCardCategory = "token" | "creature" | "instant" | "sorcery" | "enchantment" | "artifact" | "land" | "planeswalker";
 
-export async function searchCustomCards(query: string, source?: string, page: number = 1, cardsmithSort?: CardsmithSort): Promise<CustomCardsSearchResult> {
+export async function searchCustomCards(query: string, source?: string, page: number = 1, cardsmithSort?: CardsmithSort, includeTokens?: boolean, category?: CustomCardCategory): Promise<CustomCardsSearchResult> {
     try {
         const response = await axios.get(`${API_BASE}/api/custom/search`, {
             params: {
@@ -18,6 +20,8 @@ export async function searchCustomCards(query: string, source?: string, page: nu
                 source,
                 page: page > 1 ? page : undefined,
                 sort: cardsmithSort && cardsmithSort !== "newest" ? cardsmithSort : undefined,
+                includeTokens: includeTokens ? '1' : undefined,
+                category: category || undefined,
             }
         });
 
@@ -25,10 +29,11 @@ export async function searchCustomCards(query: string, source?: string, page: nu
             cards: response.data.data as MpcAutofillCard[],
             hasMoreCardsmith: response.data.hasMoreCardsmith ?? false,
             hasMoreCardbuilder: response.data.hasMoreCardbuilder ?? false,
+            hasMoreMythicBlackCore: response.data.hasMoreMythicBlackCore ?? false,
         };
     } catch (error) {
         console.error("Custom card search failed:", error);
-        return { cards: [], hasMoreCardsmith: false, hasMoreCardbuilder: false };
+        return { cards: [], hasMoreCardsmith: false, hasMoreCardbuilder: false, hasMoreMythicBlackCore: false };
     }
 }
 

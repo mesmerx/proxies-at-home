@@ -7,8 +7,10 @@ import { db } from "@/db";
 import { cancelAllProcessing } from "@/helpers/cancellationService";
 import { LANGUAGE_OPTIONS } from "@/constants";
 import { AutoTooltip, ArtSourceToggle, UpdateChannelSelector } from "../../common";
-import { HelpCircle, Coffee, Save, RefreshCw } from "lucide-react";
+import type { ArtSource } from "../../common/ArtSourceToggle";
+import { HelpCircle, Coffee, Save, RefreshCw, Trash2 } from "lucide-react";
 import { useToastStore } from "@/store/toast";
+import { API_BASE } from "@/constants";
 
 export function ApplicationSection() {
     const resetSettings = useSettingsStore((state) => state.resetSettings);
@@ -109,7 +111,8 @@ export function ApplicationSection() {
                 </div>
                 <ArtSourceToggle
                     value={preferredArtSource}
-                    onChange={setPreferredArtSource}
+                    onChange={setPreferredArtSource as (value: ArtSource) => void}
+                    preferredOnly
                 />
             </div>
 
@@ -188,6 +191,31 @@ export function ApplicationSection() {
                     Restore Factory Settings
                 </Button>
             </div>
+
+            <Button
+                color="purple"
+                fullSized
+                onClick={async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/api/cards/images/cache`, { method: 'DELETE' });
+                        const data = await res.json();
+                        useToastStore.getState().addToast({
+                            type: "success",
+                            message: `Cache cleared: ${data.cleared} searches, ${data.imagesCleared} images`,
+                            dismissible: true,
+                        });
+                    } catch {
+                        useToastStore.getState().addToast({
+                            type: "error",
+                            message: "Failed to clear cache",
+                            dismissible: true,
+                        });
+                    }
+                }}
+            >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Clear Search Cache
+            </Button>
 
             <Button color="red" fullSized onClick={handleReset}>
                 Reset App Data

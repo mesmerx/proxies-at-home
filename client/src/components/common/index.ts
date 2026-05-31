@@ -6,6 +6,7 @@ export type { SplitButtonOption } from './SplitButton';
 export { ToggleButtonGroup } from './ToggleButtonGroup';
 export type { ToggleOption, ToggleButtonGroupProps } from './ToggleButtonGroup';
 export { ArtSourceToggle } from './ArtSourceToggle';
+export type { ArtSource } from './ArtSourceToggle';
 
 // Loading States
 export { Loader } from './Loader';

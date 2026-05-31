@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
+import { debugLog } from "../utils/debug.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,11 +25,11 @@ const AX_GDRIVE = axios.create({
 });
 
 // Improved retry with exponential backoff (reduced retries for faster failure)
-async function getWithRetry(url: string, opts: AxiosRequestConfig = {}, tries = 2): Promise<AxiosResponse> {
+async function getWithRetry(url: string, opts: AxiosRequestConfig = {}, tries = 2, client: typeof AX = AX): Promise<AxiosResponse> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await AX.get(url, opts);
+      const res = await client.get(url, opts);
       if (res.status === 429) {
         const wait = Number(res.headers["retry-after"] || 5);
         console.log(`[429] Rate limited. Waiting ${wait}s before retry...`);
@@ -499,7 +500,9 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
       console.log(`[Proxy] Fetching image from: ${fetchUrl}`);
 
       // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
-      const response = await imageFetchLimit(() => getWithRetry(fetchUrl, { responseType: "arraybuffer" }));
+      // Use AX_GDRIVE (30s timeout) for large files from S3/CDN sources to avoid timeouts
+      const axiosInstance = originalUrl.includes('wasabisys.com') || originalUrl.includes('s3.') ? AX_GDRIVE : AX;
+      const response = await imageFetchLimit(() => getWithRetry(fetchUrl, { responseType: "arraybuffer" }, 2, axiosInstance));
 
       if (response.status >= 400 || !response.data) {
         console.error(`[Proxy] Upstream error ${response.status} for ${fetchUrl}`);
@@ -555,7 +558,9 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   if (!id) return res.status(400).send("Missing id");
 
   // Use same cache infrastructure as /proxy
-  const cacheKey = `gdrive_${id}_${size}`;
+  // Sanitize ID to avoid slashes creating invalid nested directory paths in cache
+  const safeId = id.replace(/\//g, '_');
+  const cacheKey = `gdrive_${safeId}_${size}`;
   let localPath = path.join(cacheDir, cacheKey);
 
   // Check cache first
@@ -570,25 +575,52 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
     // Cache check failed, proceed to fetch
   }
 
+  // Detect ID type: Google Drive IDs are alphanumeric/dashes/underscores,
+  // while storage paths like "storage/card/web/..." are CDN-hosted files.
+  const isGdriveId = /^[a-zA-Z0-9_-]+$/.test(id);
+
   // URL candidates to try (in order of preference)
-  // Google Drive direct download is preferred but often fails due to:
-  // - Access restrictions
-  // - Virus scan interstitials for large files
-  // - Rate limiting
-  // MPC Autofill CDN is more reliable as a fallback
   const candidates: string[] = [];
 
-  if (size === "full") {
-    // Try Google Drive URLs - include confirm=t to bypass virus scan interstitials
-    // Order: confirm URL first (bypasses interstitial), then regular URLs as fallback
-    candidates.push(`https://drive.google.com/uc?export=download&confirm=t&id=${encodeURIComponent(id)}`);
-    candidates.push(`https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}`);
-    candidates.push(`https://drive.google.com/uc?export=view&id=${encodeURIComponent(id)}`);
-    // Fallback to MPC Autofill CDN large size (lower quality but more reliable)
-    candidates.push(`https://img.mpcautofill.com/${id}-large-google_drive`);
+  if (isGdriveId) {
+    if (size === "full") {
+      // Try Google Drive URLs - include confirm=t to bypass virus scan interstitials
+      candidates.push(`https://drive.google.com/uc?export=download&confirm=t&id=${encodeURIComponent(id)}`);
+      candidates.push(`https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}`);
+      candidates.push(`https://drive.google.com/uc?export=view&id=${encodeURIComponent(id)}`);
+      // Fallback to Google Drive thumbnail (works for most files)
+      candidates.push(`https://drive.google.com/thumbnail?sz=w800-h800&id=${encodeURIComponent(id)}`);
+      // Fallback to MPC Autofill CDN large size
+      candidates.push(`https://img.mpcautofill.com/${id}-large-google_drive`);
+    } else {
+      // For thumbnails, prefer Google Drive thumbnail API (more reliable than CDN)
+      const thumbSize = size === "small" ? "w400-h400" : "w800-h800";
+      candidates.push(`https://drive.google.com/thumbnail?sz=${thumbSize}&id=${encodeURIComponent(id)}`);
+      // Fallback to MPC Autofill CDN
+      candidates.push(`https://img.mpcautofill.com/${id}-${size}-google_drive`);
+      // Also try Google Drive direct download as last resort
+      candidates.push(`https://drive.google.com/uc?export=download&confirm=t&id=${encodeURIComponent(id)}`);
+    }
   } else {
-    // For thumbnails (small, large), use MPC Autofill CDN (more reliable)
-    candidates.push(`https://img.mpcautofill.com/${id}-${size}-google_drive`);
+    // Storage path IDs (e.g. "storage/card/web/2022/10/07/166218.png")
+    // These come from Mythic Black Core's Wasabi S3 bucket, indexed by MPC Autofill.
+    // The ID IS the S3 object key within the mythicblackcore-wasabifs bucket.
+    const mbcS3Base = "https://s3.us-west-1.wasabisys.com/mythicblackcore-wasabifs";
+    if (id.startsWith("storage/card/web/")) {
+      // Prefer /proof/ (full quality), fallback to /web/ (thumbnail)
+      candidates.push(`${mbcS3Base}/${id.replace("/web/", "/proof/")}`);
+      candidates.push(`${mbcS3Base}/${id}`);
+    } else if (id.startsWith("storage/card/proof/")) {
+      // Already full quality, fallback to /web/
+      candidates.push(`${mbcS3Base}/${id}`);
+      candidates.push(`${mbcS3Base}/${id.replace("/proof/", "/web/")}`);
+    } else {
+      // Generic storage path — try Wasabi S3 directly
+      candidates.push(`${mbcS3Base}/${id}`);
+    }
+    // Fallback: try MPC Autofill CDN
+    candidates.push(`https://img.mpcautofill.com/${id}-${size === "full" ? "large" : size}-google_drive`);
+    candidates.push(`https://img.mpcautofill.com/${id}`);
   }
 
   // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
@@ -612,7 +644,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
           // If we fell back to the MPC CDN "large" image while requesting "full",
           // save it as "large" so we don't pollute the "full" cache slot with lower res.
           if (size === "full" && url.includes("-large-google_drive")) {
-            localPath = path.join(cacheDir, `gdrive_${id}_large`);
+            localPath = path.join(cacheDir, `gdrive_${safeId}_large`);
           }
 
           // Cache the image
@@ -638,11 +670,46 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   }
 
   // Log the final failure reason if we have one
+  // Use debug level for storage path IDs since they are known to be unreliable
   if (lastError) {
-    console.error("MPC image proxy failed:", { id, size, lastError });
+    if (isGdriveId) {
+      console.error("MPC image proxy failed:", { id, size, lastError });
+    } else {
+      debugLog(`[MPC] Storage path image unavailable: ${id}`);
+    }
   }
 
   return res.status(502).send("Could not fetch MPC image");
+});
+
+// -------------------- Cache management --------------------
+
+imageRouter.delete("/cache", async (_req: Request, res: Response) => {
+  try {
+    const { clearAllMpcSearchCache } = await import('../db/mpcSearchCache.js');
+    const cleared = clearAllMpcSearchCache();
+
+    // Clear image proxy disk cache
+    let imagesCleared = 0;
+    try {
+      const files = await fs.promises.readdir(cacheDir);
+      for (const file of files) {
+        if (file.startsWith('gdrive_') || file.startsWith('proxy_')) {
+          await fs.promises.unlink(path.join(cacheDir, file));
+          imagesCleared++;
+        }
+      }
+    } catch {
+      // Cache dir might not exist or be empty
+    }
+
+    debugLog(`[Cache] Invalidated: ${cleared} search entries, ${imagesCleared} image files`);
+    return res.json({ cleared, imagesCleared });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[Cache] Failed to invalidate:", msg);
+    return res.status(500).json({ error: "Failed to invalidate cache" });
+  }
 });
 
 // -------------------- Builtin cardback images --------------------

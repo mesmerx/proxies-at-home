@@ -17,11 +17,18 @@ const cardbuilderLimiter = new Bottleneck({
     minTime: 200,
 });
 
+const mythicBlackCoreLimiter = new Bottleneck({
+    maxConcurrent: 3,
+    minTime: 300,
+});
+
 interface CustomCard {
     id: string;
     name: string;
     imageUrl: string;
-    source: "mtgcardsmith" | "mtgcardbuilder";
+    /** Fallback image URL (lower quality) used when primary fails */
+    fallbackUrl?: string;
+    source: "mtgcardsmith" | "mtgcardbuilder" | "mythicblackcore";
     author?: string;
     url: string;
 }
@@ -101,9 +108,9 @@ async function searchMtgCardsmith(query: string, page: number = 1, sort: "newest
 
 
 /**
- * Search MTG Card Builder with pagination support
+ * Core API call to MTG Card Builder with optional category filter
  */
-async function searchMtgCardBuilder(query: string, page: number = 1): Promise<PagedResults> {
+async function fetchCardBuilderPage(query: string, page: number = 1, category?: string): Promise<PagedResults> {
     const url = "https://mtgcardbuilder.com/wp-admin/admin-ajax.php";
 
     const params = new URLSearchParams();
@@ -112,6 +119,7 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
     params.append('nsfw', '0');
     params.append('other', '0');
     params.append('cpage', String(page));
+    if (category) params.append('category', category);
     params.append('action', 'builder_ajax');
     params.append('method', 'search_gallery_cards');
 
@@ -131,13 +139,19 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         data.data.forEach((item: any) => {
             if (item.image_url) {
+                // Use the download.php endpoint for higher quality images
+                // e.g. https://mtgcardbuilder.com/download.php?download=https://mtgcardbuilder.com/custom_db/custom_visual/tmp_xxx.png
+                const originalUrl = item.image_url as string;
+                const highQualityUrl = originalUrl.includes('mtgcardbuilder.com/')
+                    ? `https://mtgcardbuilder.com/download.php?download=${originalUrl}`
+                    : originalUrl; // S3 URLs stay as-is
                 results.push({
                     id: `mtgcardbuilder-${item.id}`,
                     name: item.card_edition || item.search_card_name || "Untitled Card",
-                    imageUrl: item.image_url,
+                    imageUrl: highQualityUrl,
                     source: "mtgcardbuilder",
                     author: item.user_name,
-                    url: item.image_url // Use image URL as link for now
+                    url: originalUrl // Link to original for reference
                 });
             }
         });
@@ -151,22 +165,216 @@ async function searchMtgCardBuilder(query: string, page: number = 1): Promise<Pa
     return { cards: results, hasMore };
 }
 
+/**
+ * Search MTG Card Builder with pagination support.
+ * Also searches with category=token in parallel to capture token results
+ * that may not appear in the general search.
+ */
+async function searchMtgCardBuilder(query: string, page: number = 1, includeTokens: boolean = false, category?: string): Promise<PagedResults> {
+    const searches = [fetchCardBuilderPage(query, page, category)];
+    if (includeTokens && category !== 'token') {
+        searches.push(fetchCardBuilderPage(query, page, 'token'));
+    }
+    const results = await Promise.all(searches);
+
+    const generalResult = results[0];
+    const tokenResult = includeTokens ? results[1] : { cards: [] as CustomCard[], hasMore: false };
+
+    // Merge results, deduplicating by id
+    const seenIds = new Set<string>();
+    const merged: CustomCard[] = [];
+    for (const card of [...generalResult.cards, ...tokenResult.cards]) {
+        if (!seenIds.has(card.id)) {
+            seenIds.add(card.id);
+            merged.push(card);
+        }
+    }
+
+    return {
+        cards: merged,
+        hasMore: generalResult.hasMore || tokenResult.hasMore,
+    };
+}
+
+/**
+ * Extract proof (full quality) and web (thumbnail) image URLs from a Mythic Black Core API item.
+ * Returns both URLs so the client can try proof first and fall back to web.
+ *
+ * IMPORTANT: design_date from the MBC API is the *last modification* date, NOT the upload date
+ * that determines the S3 path. Using it to construct URLs produces wrong dates (404s).
+ * Instead, we derive the proof URL from the web URL (which has the correct date path).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractMythicBlackCoreImageUrls(item: any): { proofUrl: string; webUrl: string } {
+    let proofUrl = '';
+    let webUrl = '';
+
+    // Try metadata first (has full-quality and web paths)
+    if (item.metadata && item.metadata.wasabi && item.metadata.wasabi.storage) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const storage of item.metadata.wasabi.storage as any[]) {
+            if (storage.full && storage.full.path && storage.full.status === 'ok') {
+                const fullPath = storage.full.path as string;
+                if (fullPath.includes('://') && !proofUrl) {
+                    proofUrl = fullPath;
+                }
+            }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const storage of item.metadata.wasabi.storage as any[]) {
+            if (storage.web && storage.web.path && !webUrl) {
+                webUrl = storage.web.path as string;
+            }
+        }
+    }
+
+    // Derive proof URL from web URL by replacing /web/ with /proof/
+    // This works because both paths share the same date-based directory structure,
+    // and the web URL has the correct date (unlike design_date).
+    if (!proofUrl && webUrl) {
+        proofUrl = webUrl.replace('/storage/card/web/', '/storage/card/proof/');
+    }
+    // Derive web URL from proof URL if only proof is available
+    if (!webUrl && proofUrl) {
+        webUrl = proofUrl.replace('/storage/card/proof/', '/storage/card/web/');
+    }
+
+    // Last resort: construct URLs from design_date and id.
+    // NOTE: design_date is the last-modification date, NOT the upload date,
+    // so the path may be wrong (causing 404s). But it's better to show a
+    // broken image than to omit the card entirely — the fallback mechanism
+    // will try the web URL if proof fails.
+    if (!proofUrl && !webUrl && item.design_date && item.id) {
+        const parts = (item.design_date as string).split(' ')[0].split('-');
+        if (parts.length === 3) {
+            const base = `https://s3.us-west-1.wasabisys.com/mythicblackcore-wasabifs/storage/card`;
+            proofUrl = `${base}/proof/${parts[0]}/${parts[1]}/${parts[2]}/${item.id}.png`;
+            webUrl = `${base}/web/${parts[0]}/${parts[1]}/${parts[2]}/${item.id}.png`;
+        }
+    }
+
+    return { proofUrl, webUrl };
+}
+
+/**
+ * Core API call to Mythic Black Core with optional category filter
+ */
+async function fetchMythicBlackCorePage(query: string, page: number = 1, category?: string): Promise<PagedResults> {
+    const url = "https://www.mythicblackcore.com/ajax/gallery.php";
+
+    const params = new URLSearchParams();
+    if (category) {
+        // Category browsing uses getGalleryCards
+        params.append('category', category);
+        params.append('user', '');
+        params.append('ajax_action', 'getGalleryCards');
+        params.append('ajax_in_site', 'true');
+    } else {
+        // Search uses searchGalleryCards
+        params.append('cpage', String(page));
+        params.append('type', 'search');
+        params.append('val', '');
+        params.append('search', query);
+        params.append('order', 'recent');
+        params.append('nsfw', '0');
+        params.append('other', '0');
+        params.append('ajax_action', 'searchGalleryCards');
+    }
+    if (!category) {
+        params.append('cpage', String(page));
+    } else {
+        params.append('cpage', String(page));
+    }
+
+    const { data } = await axios.post(url, params, {
+        headers: {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+            "Origin": "https://www.mythicblackcore.com",
+            "Referer": "https://www.mythicblackcore.com/gallery/?index=1",
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        timeout: 10000
+    });
+
+    const results: CustomCard[] = [];
+
+    if (data && Array.isArray(data.data)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data.data.forEach((item: any) => {
+            const { proofUrl, webUrl } = extractMythicBlackCoreImageUrls(item);
+            if (!proofUrl && !webUrl) return;
+
+            results.push({
+                id: `mythicblackcore-${item.id}`,
+                name: item.card_edition || item.search_card_name || "Untitled Card",
+                imageUrl: proofUrl || webUrl,
+                fallbackUrl: webUrl && webUrl !== (proofUrl || webUrl) ? webUrl : undefined,
+                source: "mythicblackcore",
+                author: item.user_name || item.user_id,
+                url: `https://www.mythicblackcore.com/gallery/?index=1`,
+            });
+        });
+    }
+
+    const hasMore = results.length > 0;
+
+    return { cards: results, hasMore };
+}
+
+/**
+ * Search Mythic Black Core with pagination support.
+ * Also searches with category=token in parallel to capture token results.
+ */
+async function searchMythicBlackCore(query: string, page: number = 1, includeTokens: boolean = false, category?: string): Promise<PagedResults> {
+    const searches = [fetchMythicBlackCorePage(query, page, category)];
+    if (includeTokens && category !== 'token') {
+        searches.push(fetchMythicBlackCorePage(query, page, 'token'));
+    }
+    const results = await Promise.all(searches);
+
+    const generalResult = results[0];
+    const tokenResult = includeTokens ? results[1] : { cards: [] as CustomCard[], hasMore: false };
+
+    // Merge results, deduplicating by id
+    const seenIds = new Set<string>();
+    const merged: CustomCard[] = [];
+    for (const card of [...generalResult.cards, ...tokenResult.cards]) {
+        if (!seenIds.has(card.id)) {
+            seenIds.add(card.id);
+            merged.push(card);
+        }
+    }
+
+    return {
+        cards: merged,
+        hasMore: generalResult.hasMore || tokenResult.hasMore,
+    };
+}
+
 // Wrapped versions for rate limiting
 const wrappedSearchCardsmith = cardsmithLimiter.wrap(searchMtgCardsmith);
 const wrappedSearchCardBuilder = cardbuilderLimiter.wrap(searchMtgCardBuilder);
+const wrappedSearchMythicBlackCore = mythicBlackCoreLimiter.wrap(searchMythicBlackCore);
 
 // Helper to convert CustomCard to MpcCard format for caching/client compatibility
 function mapToMpcCard(card: CustomCard): MpcCard {
+    const sourceTag = card.source === "mtgcardsmith" ? "Cardsmith"
+        : card.source === "mtgcardbuilder" ? "CardBuilder"
+        : "MythicBlackCore";
+    const sourceName = card.source === "mtgcardsmith" ? "MTG Cardsmith"
+        : card.source === "mtgcardbuilder" ? "MTG Card Builder"
+        : "Mythic Black Core";
+
     return {
         identifier: card.imageUrl, // Use imageUrl as identifier for proxying
         name: card.name,
-        smallThumbnailUrl: card.imageUrl,
-        mediumThumbnailUrl: card.imageUrl,
+        smallThumbnailUrl: card.fallbackUrl || card.imageUrl,
+        mediumThumbnailUrl: card.fallbackUrl || card.imageUrl,
         dpi: 300,
-        tags: ["Custom", card.source === "mtgcardsmith" ? "Cardsmith" : "CardBuilder"],
-        sourceName: card.source === "mtgcardsmith" ? "MTG Cardsmith" : "MTG Card Builder",
+        tags: ["Custom", sourceTag],
+        sourceName,
         source: card.url,
-        extension: card.imageUrl.split('.').pop()?.split(/[?#]/)[0] || "png",
+        extension: (card.url || card.imageUrl).split('.').pop()?.split(/[?#]/)[0] || "png",
         size: 0
     };
 }
@@ -175,16 +383,17 @@ interface SearchResult {
     cards: MpcCard[];
     hasMoreCardsmith: boolean;
     hasMoreCardbuilder: boolean;
+    hasMoreMythicBlackCore: boolean;
 }
 
 /**
  * Perform a search for a single query (cached or fresh)
  */
-async function performSearch(query: string, sourceFilter?: string, page: number = 1, cardsmithSort: "newest" | "oldest" | "favorites" = "newest"): Promise<SearchResult> {
+async function performSearch(query: string, sourceFilter?: string, page: number = 1, cardsmithSort: "newest" | "oldest" | "favorites" = "newest", includeTokens: boolean = false, category?: string): Promise<SearchResult> {
     const normalizedQuery = query.toLowerCase().trim();
-    // Cache key includes source filter, page number, and cardsmith sort
-    // v3: Bumped cache version to clear results cached with wrong selectors (col_list fix)
-    const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p${page}:s${cardsmithSort}:v3`;
+    // Cache key includes source filter, page number, cardsmith sort, token flag, and category
+    // v7: Added category to avoid category/non-category cache collisions
+    const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p${page}:s${cardsmithSort}:t${includeTokens ? '1' : '0'}:c${category || 'all'}:v7`;
 
     // Check cache (only for page 1 — subsequent pages are not cached to avoid stale pagination)
     if (page === 1) {
@@ -195,27 +404,35 @@ async function performSearch(query: string, sourceFilter?: string, page: number 
             // (consistent with the live-fetch fallback; one extra empty-page click is acceptable).
             const csCards = cached.filter(c => c.sourceName === "MTG Cardsmith");
             const cbCards = cached.filter(c => c.sourceName === "MTG Card Builder");
+            const mbcCards = cached.filter(c => c.sourceName === "Mythic Black Core");
             return {
                 cards: cached,
                 hasMoreCardsmith: csCards.length > 0,
                 hasMoreCardbuilder: cbCards.length > 0,
+                hasMoreMythicBlackCore: mbcCards.length > 0,
             };
         }
     }
 
     let cardsmithPromise: Promise<PagedResults> | undefined;
     let cardbuilderPromise: Promise<PagedResults> | undefined;
+    let mythicBlackCorePromise: Promise<PagedResults> | undefined;
 
     if (!sourceFilter || sourceFilter === 'mtgcardsmith') {
         cardsmithPromise = wrappedSearchCardsmith(query, page, cardsmithSort);
     }
 
     if (!sourceFilter || sourceFilter === 'mtgcardbuilder') {
-        cardbuilderPromise = wrappedSearchCardBuilder(query, page);
+        cardbuilderPromise = wrappedSearchCardBuilder(query, page, includeTokens, category);
+    }
+
+    if (!sourceFilter || sourceFilter === 'mythicblackcore') {
+        mythicBlackCorePromise = wrappedSearchMythicBlackCore(query, page, includeTokens, category);
     }
 
     let cardsmithResult: PagedResults = { cards: [], hasMore: false };
     let cardbuilderResult: PagedResults = { cards: [], hasMore: false };
+    let mythicBlackCoreResult: PagedResults = { cards: [], hasMore: false };
     let partialFailure = false;
 
     if (cardsmithPromise) {
@@ -236,7 +453,16 @@ async function performSearch(query: string, sourceFilter?: string, page: number 
         }
     }
 
-    const allResults = [...cardsmithResult.cards, ...cardbuilderResult.cards].map(mapToMpcCard);
+    if (mythicBlackCorePromise) {
+        try {
+            mythicBlackCoreResult = await mythicBlackCorePromise;
+        } catch (error) {
+            console.error(`[CustomCards] Mythic Black Core search failed for "${query}":`, error);
+            partialFailure = true;
+        }
+    }
+
+    const allResults = [...cardsmithResult.cards, ...cardbuilderResult.cards, ...mythicBlackCoreResult.cards].map(mapToMpcCard);
 
     // Cache page 1 results only, and only if no partial failure occurred.
     if (page === 1 && !partialFailure) {
@@ -247,6 +473,7 @@ async function performSearch(query: string, sourceFilter?: string, page: number 
         cards: allResults,
         hasMoreCardsmith: cardsmithResult.hasMore,
         hasMoreCardbuilder: cardbuilderResult.hasMore,
+        hasMoreMythicBlackCore: mythicBlackCoreResult.hasMore,
     };
 }
 
@@ -264,13 +491,15 @@ router.get("/search", async (req: Request, res: Response) => {
     const rawSort = req.query.sort as string | undefined;
     const cardsmithSort: "newest" | "oldest" | "favorites" =
         rawSort === "oldest" || rawSort === "favorites" ? rawSort : "newest";
+    const includeTokens = req.query.includeTokens === '1';
+    const category = req.query.category as string | undefined;
 
     if (!q) {
         return res.status(400).json({ error: "Missing q parameter" });
     }
 
     try {
-        const result = await performSearch(q, source, page, cardsmithSort);
+        const result = await performSearch(q, source, page, cardsmithSort, includeTokens, category);
 
         return res.json({
             object: "list",
@@ -278,6 +507,7 @@ router.get("/search", async (req: Request, res: Response) => {
             data: result.cards,
             hasMoreCardsmith: result.hasMoreCardsmith,
             hasMoreCardbuilder: result.hasMoreCardbuilder,
+            hasMoreMythicBlackCore: result.hasMoreMythicBlackCore,
         });
     } catch (error) {
         console.error("[CustomCards] Search failed:", error);
@@ -303,7 +533,7 @@ router.post("/batch-search", async (req: Request, res: Response) => {
     // Check cache for all queries
     for (const query of queries) {
         const normalizedQuery = query.toLowerCase().trim();
-        const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p1:snewest:v3`;
+        const cacheKey = `${normalizedQuery}:custom:${sourceFilter || 'all'}:p1:snewest:t0:v6`;
         const cached = getCachedMpcSearch(cacheKey, "CUSTOM");
 
         if (cached) {

@@ -12,7 +12,7 @@ import { SelectDropdown, MultiSelectDropdown } from "./";
 import { useSettingsStore, useUserPreferencesStore } from "@/store";
 import type { MpcAutofillCard } from "@/helpers/mpcAutofillApi";
 import type { MpcFilterState } from "@/hooks/useMpcSearch";
-import type { CardsmithSort } from "@/helpers/customCardsApi";
+import type { CardsmithSort, CustomCardCategory } from "@/helpers/customCardsApi";
 import { fetchScryfallSets } from "@/helpers/scryfallApi";
 import type { ScryfallSet } from "../../../../shared/types";
 import { FilterBarShell } from "./FilterBarShell";
@@ -51,6 +51,9 @@ interface MpcFilterProps extends CommonFilterBarProps {
   /** Cardsmith-specific server-side sort (only present when artSource === "cardsmith") */
   cardsmithSort?: CardsmithSort;
   setCardsmithSort?: (sort: CardsmithSort) => void;
+  /** Category filter for custom card sources (Card Builder, MBC) */
+  category?: CustomCardCategory;
+  setCategory?: (category: CustomCardCategory | undefined) => void;
 }
 
 export interface ScryfallFilterProps extends CommonFilterBarProps {
@@ -1219,6 +1222,53 @@ export function CardArtFilterBar(props: CardArtFilterBarProps) {
           )}
         </button>
       </div>
+
+      {/* Category filter for MPC/custom sources */}
+      {mode === "mpc" && (props as MpcFilterProps).category !== undefined && (
+        <div className="flex items-center">
+          <SelectDropdown
+            label={(props as MpcFilterProps).category
+              ? { token: "Token", creature: "Creature", instant: "Instant", sorcery: "Sorcery", enchantment: "Enchantment", artifact: "Artifact", land: "Land", planeswalker: "Planeswalker" }[(props as MpcFilterProps).category!]
+              : "Category"
+            }
+            isOpen={showMinDpiDropdown}
+            onToggle={() => setShowMinDpiDropdown(!showMinDpiDropdown)}
+            onClose={() => setShowMinDpiDropdown(false)}
+            disableFavorites
+          >
+            {[
+              { value: undefined, label: "All" },
+              { value: "token" as CustomCardCategory, label: "Token" },
+              { value: "creature" as CustomCardCategory, label: "Creature" },
+              { value: "instant" as CustomCardCategory, label: "Instant" },
+              { value: "sorcery" as CustomCardCategory, label: "Sorcery" },
+              { value: "enchantment" as CustomCardCategory, label: "Enchantment" },
+              { value: "artifact" as CustomCardCategory, label: "Artifact" },
+              { value: "land" as CustomCardCategory, label: "Land" },
+              { value: "planeswalker" as CustomCardCategory, label: "Planeswalker" },
+            ].map((option) => (
+              <div
+                key={option.value ?? "all"}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-600"
+              >
+                <button
+                  onClick={() => {
+                    (props as MpcFilterProps).setCategory?.(option.value);
+                    setShowMinDpiDropdown(false);
+                  }}
+                  className={`flex-1 text-left text-sm ${
+                    (props as MpcFilterProps).category === option.value
+                      ? "text-blue-600 dark:text-blue-400 font-medium"
+                      : "text-gray-900 dark:text-white"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              </div>
+            ))}
+          </SelectDropdown>
+        </div>
+      )}
 
       {mode === "scryfall" && (
         <div className="flex items-center">

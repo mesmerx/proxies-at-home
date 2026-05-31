@@ -3,6 +3,7 @@ import { Button } from "flowbite-react";
 import { ChevronDown, ChevronRight, Star, RefreshCw } from "lucide-react";
 import { CardGrid } from "./CardGrid";
 import { CardArtFilterBar } from "./CardArtFilterBar";
+import type { ArtSource } from "./ArtSourceToggle";
 import { CardImageSvg } from "./CardImageSvg";
 import { useScryfallSearch } from "@/hooks/useScryfallSearch";
 import { useScryfallPrints } from "@/hooks/useScryfallPrints";
@@ -17,7 +18,7 @@ import {
   getMpcAutofillImageUrl,
   extractMpcIdentifierFromImageId,
 } from "@/helpers/mpcAutofillApi";
-import { searchCustomCards, type CardsmithSort } from "@/helpers/customCardsApi";
+import { searchCustomCards, type CardsmithSort, type CustomCardCategory } from "@/helpers/customCardsApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
 import { fetchScryfallSets } from "@/helpers/scryfallApi";
 import type { ScryfallCard, PrintInfo } from "../../../../shared/types";
@@ -74,8 +75,6 @@ function useStableSortKey<T>(
 
   return sortKeyRef.current;
 }
-
-type ArtSource = "scryfall" | "mpc" | "cardsmith" | "cardbuilder";
 
 export interface CardArtContentProps {
   /** Art source to search */
@@ -203,6 +202,7 @@ export function CardArtContent({
 
   // Server-side sort for Cardsmith (newest | oldest | favorites)
   const [cardsmithSort, setCardsmithSort] = useState<CardsmithSort>("newest");
+  const [customCategory, setCustomCategory] = useState<CustomCardCategory | undefined>(undefined);
 
   // Pagination state for custom sources (cardsmith / cardbuilder) — declared here,
   // effects that reference mpcData are placed after mpcData is initialized below.
@@ -249,7 +249,7 @@ export function CardArtContent({
     return undefined;
   }, [selectedArtId]);
   // MPC Search Hooks - sorting is done in CardArtContent using mpcSortKey for consistency
-  const isMpcLike = artSource === "mpc" || artSource === "cardsmith" || artSource === "cardbuilder";
+  const isMpcLike = artSource === "mpc" || artSource === "cardsmith" || artSource === "cardbuilder" || artSource === "mythicblackcore";
   const mpcData = useMpcSearch(isMpcLike ? query : "", {
     autoSearch,
     // Pass card type_line for auto-detection of token cards
@@ -258,6 +258,7 @@ export function CardArtContent({
     searchContext: artSource,
     // Server-side sort for Cardsmith
     cardsmithSort: artSource === "cardsmith" ? cardsmithSort : undefined,
+    category: isMpcLike ? customCategory : undefined,
   });
 
   // Filter MPC results by source if specific source selected
@@ -286,6 +287,16 @@ export function CardArtContent({
       return [...cards, ...extraCustomCards];
     }
 
+    if (artSource === "mythicblackcore") {
+      let cards = mpcData.cards.filter(c => c.sourceName === "Mythic Black Core");
+      // Apply Tag filters if set
+      if (mpcData.filters.tagFilters.size > 0) {
+        cards = cards.filter(c => c.tags?.some(tag => mpcData.filters.tagFilters.has(tag)));
+      }
+      // Append extra pages (already source-filtered)
+      return [...cards, ...extraCustomCards];
+    }
+
     // For standard MPC mode, use the hook's filtered output which respects all filters including source
     // But exclude custom sources to keep them exclusive to their own tabs
     if (artSource === "mpc") {
@@ -302,6 +313,7 @@ export function CardArtContent({
   const effectiveHasMore = customPage === 1
     ? (artSource === "cardsmith" ? mpcData.hasMoreCardsmith
       : artSource === "cardbuilder" ? mpcData.hasMoreCardbuilder
+      : artSource === "mythicblackcore" ? mpcData.hasMoreMythicBlackCore
       : false)
     : customHasMore;
 
@@ -310,13 +322,14 @@ export function CardArtContent({
     const nextPage = customPage + 1;
     const source = artSource === "cardsmith" ? "mtgcardsmith"
       : artSource === "cardbuilder" ? "mtgcardbuilder"
+      : artSource === "mythicblackcore" ? "mythicblackcore"
       : undefined;
     if (!source) return;
 
     setIsLoadingMore(true);
     try {
       const sort = artSource === "cardsmith" ? cardsmithSort : undefined;
-      const result = await searchCustomCards(query, source, nextPage, sort);
+      const result = await searchCustomCards(query, source, nextPage, sort, false, customCategory);
       if (result.cards.length > 0) {
         setExtraCustomCards(prev => [...prev, ...result.cards]);
         setCustomPage(nextPage);
@@ -333,6 +346,26 @@ export function CardArtContent({
       setIsLoadingMore(false);
     }
   }, [isLoadingMore, effectiveHasMore, customPage, artSource, query, cardsmithSort]);
+
+  // Infinite scroll: auto-load more when sentinel element becomes visible
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if ((artSource !== "cardsmith" && artSource !== "cardbuilder" && artSource !== "mythicblackcore") || !effectiveHasMore || isLoadingMore) return;
+
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          handleLoadMore();
+        }
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [artSource, effectiveHasMore, isLoadingMore, handleLoadMore]);
 
   // For DFC filtering in prints mode, extract face names and filter
   const uniqueFaces = useMemo(
@@ -661,8 +694,11 @@ export function CardArtContent({
     if (artSource === "cardbuilder") {
       return cards.filter(c => c.sourceName === "MTG Card Builder");
     }
+    if (artSource === "mythicblackcore") {
+      return cards.filter(c => c.sourceName === "Mythic Black Core");
+    }
     if (artSource === "mpc") {
-      return cards.filter(c => c.sourceName !== "MTG Cardsmith" && c.sourceName !== "MTG Card Builder");
+      return cards.filter(c => c.sourceName !== "MTG Cardsmith" && c.sourceName !== "MTG Card Builder" && c.sourceName !== "Mythic Black Core");
     }
     return cards;
   }, [mpcData.cards, artSource]);
@@ -960,6 +996,10 @@ export function CardArtContent({
       <>
         Search for a card to find custom art on Card Builder.
       </>
+    ) : artSource === "mythicblackcore" ? (
+      <>
+        Search for a card to find custom art on Mythic Black Core.
+      </>
     ) : (
       <>
         Search for a card to find custom art.
@@ -984,7 +1024,9 @@ export function CardArtContent({
         ? `No Cardsmith cards found for "${query}"`
         : artSource === "cardbuilder"
           ? `No Card Builder cards found for "${query}"`
-          : `No MPC art found for "${query}"`;
+          : artSource === "mythicblackcore"
+            ? `No Mythic Black Core cards found for "${query}"`
+            : `No MPC art found for "${query}"`;
 
   // Check if we have results but they're all filtered out
   const hasResultsButFiltered =
@@ -1034,6 +1076,8 @@ export function CardArtContent({
               mode="mpc"
               cardsmithSort={artSource === "cardsmith" ? cardsmithSort : undefined}
               setCardsmithSort={artSource === "cardsmith" ? setCardsmithSort : undefined}
+              category={customCategory}
+              setCategory={setCustomCategory}
             />
           )}
 
@@ -1361,24 +1405,15 @@ export function CardArtContent({
                       {sortedMpcCards.map(renderMpcCard)}
                     </CardGrid>
                   )}
-                {/* Load more button for custom sources (cardsmith / cardbuilder) */}
-                {(artSource === "cardsmith" || artSource === "cardbuilder") && effectiveHasMore && (
-                  <div className="flex justify-center py-4">
-                    <Button
-                      color="gray"
-                      onClick={handleLoadMore}
-                      disabled={isLoadingMore}
-                      className="min-w-32"
-                    >
-                      {isLoadingMore ? (
-                        <span className="flex items-center gap-2">
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          Carregando...
-                        </span>
-                      ) : (
-                        "Carregar mais"
-                      )}
-                    </Button>
+                {/* Infinite scroll sentinel + loading indicator for custom sources (cardsmith / cardbuilder / mythicblackcore) */}
+                {(artSource === "cardsmith" || artSource === "cardbuilder" || artSource === "mythicblackcore") && effectiveHasMore && (
+                  <div ref={loadMoreSentinelRef} className="flex justify-center py-4">
+                    {isLoadingMore && (
+                      <span className="flex items-center gap-2 text-gray-400">
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Carregando...
+                      </span>
+                    )}
                   </div>
                 )}
               </div>

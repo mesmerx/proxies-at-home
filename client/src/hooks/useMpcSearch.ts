@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { searchMpcAutofill, type MpcAutofillCard } from "@/helpers/mpcAutofillApi";
-import { searchCustomCards, type CardsmithSort } from "@/helpers/customCardsApi";
+import { searchCustomCards, type CardsmithSort, type CustomCardCategory } from "@/helpers/customCardsApi";
 import { buildMpcSearchParams, TOKEN_TYPE_COLLISIONS, type MpcCardType } from "@/helpers/tokenQueryUtils";
 import { useSettingsStore, useUserPreferencesStore } from "@/store";
 
@@ -28,6 +28,8 @@ export interface MpcSearchResult {
     hasMoreCardsmith: boolean;
     /** Whether Card Builder has more pages available */
     hasMoreCardbuilder: boolean;
+    /** Whether Mythic Black Core has more pages available */
+    hasMoreMythicBlackCore: boolean;
     /** Filter state and setters */
     filters: MpcFilterState;
     /** Available sources from results */
@@ -61,6 +63,8 @@ export interface UseMpcSearchOptions {
     searchContext?: string;
     /** Sort order for Cardsmith results (server-side) */
     cardsmithSort?: CardsmithSort;
+    /** Category filter for custom card sources (Card Builder, MBC) */
+    category?: CustomCardCategory;
 }
 
 /**
@@ -71,7 +75,7 @@ export function useMpcSearch(
     query: string,
     options: UseMpcSearchOptions = {}
 ): MpcSearchResult {
-    const { autoSearch = true, cardData, cardType: overrideCardType, searchContext, cardsmithSort } = options;
+    const { autoSearch = true, cardData, cardType: overrideCardType, searchContext, cardsmithSort, category } = options;
 
     // User Preferences store for favorites
     const preferences = useUserPreferencesStore(s => s.preferences);
@@ -89,6 +93,7 @@ export function useMpcSearch(
     const [hasSearched, setHasSearched] = useState(false);
     const [hasMoreCardsmith, setHasMoreCardsmith] = useState(false);
     const [hasMoreCardbuilder, setHasMoreCardbuilder] = useState(false);
+    const [hasMoreMythicBlackCore, setHasMoreMythicBlackCore] = useState(false);
 
     // Filter state
     const [minDpi, setMinDpi] = useState<number>(() => favoriteMpcDpi ?? 800);
@@ -106,7 +111,7 @@ export function useMpcSearch(
     };
 
     // Refs for search deduplication
-    const lastSearchParams = useRef<{ name: string; fuzzy: boolean; cardType: MpcCardType; isCollision?: boolean; context?: string; cardsmithSort?: CardsmithSort } | null>(null);
+    const lastSearchParams = useRef<{ name: string; fuzzy: boolean; cardType: MpcCardType; isCollision?: boolean; context?: string; cardsmithSort?: CardsmithSort; category?: CustomCardCategory } | null>(null);
     const lastSearchedName = useRef<string>("");
 
     // Search handler
@@ -128,14 +133,15 @@ export function useMpcSearch(
             lastSearchParams.current?.cardType === effectiveCardType &&
             lastSearchParams.current?.isCollision === isCollision &&
             lastSearchParams.current?.context === searchContext &&
-            lastSearchParams.current?.cardsmithSort === cardsmithSort) return;
+            lastSearchParams.current?.cardsmithSort === cardsmithSort &&
+            lastSearchParams.current?.category === category) return;
 
-        lastSearchParams.current = { name: searchQuery, fuzzy: mpcFuzzySearch, cardType: effectiveCardType, isCollision, context: searchContext, cardsmithSort };
+        lastSearchParams.current = { name: searchQuery, fuzzy: mpcFuzzySearch, cardType: effectiveCardType, isCollision, context: searchContext, cardsmithSort, category };
         lastSearchedName.current = query;
         setIsLoading(true);
         setHasSearched(true);
 
-        const emptyCustomResult = { cards: [], hasMoreCardsmith: false, hasMoreCardbuilder: false };
+        const emptyCustomResult = { cards: [], hasMoreCardsmith: false, hasMoreCardbuilder: false, hasMoreMythicBlackCore: false };
 
         try {
             if (isCollision) {
@@ -146,50 +152,59 @@ export function useMpcSearch(
                 const fetchMpc = !searchContext || searchContext === 'mpc';
                 const fetchCardsmith = !searchContext || searchContext === 'cardsmith';
                 const fetchCardBuilder = !searchContext || searchContext === 'cardbuilder';
+                const fetchMythicBlackCore = !searchContext || searchContext === 'mythicblackcore';
 
-                const [cardResults, tokenResults, cardsmithResult, cardbuilderResult] = await Promise.all([
+                const [cardResults, tokenResults, cardsmithResult, cardbuilderResult, mythicBlackCoreResult] = await Promise.all([
                     fetchMpc ? searchMpcAutofill(searchQuery, 'CARD', mpcFuzzySearch) : Promise.resolve([]),
                     fetchMpc ? searchMpcAutofill(searchQuery, 'TOKEN', mpcFuzzySearch) : Promise.resolve([]),
-                    fetchCardsmith ? searchCustomCards(searchQuery, 'mtgcardsmith', 1, cardsmithSort) : Promise.resolve(emptyCustomResult),
-                    fetchCardBuilder ? searchCustomCards(searchQuery, 'mtgcardbuilder') : Promise.resolve(emptyCustomResult),
+                    fetchCardsmith ? searchCustomCards(searchQuery, 'mtgcardsmith', 1, cardsmithSort, true, category) : Promise.resolve(emptyCustomResult),
+                    fetchCardBuilder ? searchCustomCards(searchQuery, 'mtgcardbuilder', 1, undefined, true, category) : Promise.resolve(emptyCustomResult),
+                    fetchMythicBlackCore ? searchCustomCards(searchQuery, 'mythicblackcore', 1, undefined, true, category) : Promise.resolve(emptyCustomResult),
                 ]);
 
-                const merged = [...tokenResults, ...cardResults, ...cardsmithResult.cards, ...cardbuilderResult.cards];
+                const merged = [...tokenResults, ...cardResults, ...cardsmithResult.cards, ...cardbuilderResult.cards, ...mythicBlackCoreResult.cards];
                 setCards(merged);
                 // Only update hasMore for sources that were actually fetched,
                 // so switching context doesn't clear state from other sources.
                 if (fetchCardsmith) setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
                 if (fetchCardBuilder) setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
+                if (fetchMythicBlackCore) setHasMoreMythicBlackCore(mythicBlackCoreResult.hasMoreMythicBlackCore);
             } else {
                 // Always search custom cards when searching for cards (not tokens)
                 const shouldSearchCustom = effectiveCardType === 'CARD';
+                // Only include token results from custom sources when explicitly searching for tokens
+                const includeTokens = effectiveCardType === 'TOKEN';
 
                 const fetchMpc = !searchContext || searchContext === 'mpc';
                 const fetchCardsmith = shouldSearchCustom && (!searchContext || searchContext === 'cardsmith');
                 const fetchCardBuilder = shouldSearchCustom && (!searchContext || searchContext === 'cardbuilder');
+                const fetchMythicBlackCore = shouldSearchCustom && (!searchContext || searchContext === 'mythicblackcore');
 
-                const [mpcResults, cardsmithResult, cardbuilderResult] = await Promise.all([
+                const [mpcResults, cardsmithResult, cardbuilderResult, mythicBlackCoreResult] = await Promise.all([
                     fetchMpc ? searchMpcAutofill(searchQuery, effectiveCardType, mpcFuzzySearch) : Promise.resolve([]),
-                    fetchCardsmith ? searchCustomCards(searchQuery, 'mtgcardsmith', 1, cardsmithSort) : Promise.resolve(emptyCustomResult),
-                    fetchCardBuilder ? searchCustomCards(searchQuery, 'mtgcardbuilder') : Promise.resolve(emptyCustomResult),
+                    fetchCardsmith ? searchCustomCards(searchQuery, 'mtgcardsmith', 1, cardsmithSort, includeTokens, category) : Promise.resolve(emptyCustomResult),
+                    fetchCardBuilder ? searchCustomCards(searchQuery, 'mtgcardbuilder', 1, undefined, includeTokens, category) : Promise.resolve(emptyCustomResult),
+                    fetchMythicBlackCore ? searchCustomCards(searchQuery, 'mythicblackcore', 1, undefined, includeTokens, category) : Promise.resolve(emptyCustomResult),
                 ]);
 
-                const merged = [...mpcResults, ...cardsmithResult.cards, ...cardbuilderResult.cards];
+                const merged = [...mpcResults, ...cardsmithResult.cards, ...cardbuilderResult.cards, ...mythicBlackCoreResult.cards];
                 setCards(merged);
                 // Only update hasMore for sources that were actually fetched,
                 // so switching context doesn't clear state from other sources.
                 if (fetchCardsmith) setHasMoreCardsmith(cardsmithResult.hasMoreCardsmith);
                 if (fetchCardBuilder) setHasMoreCardbuilder(cardbuilderResult.hasMoreCardbuilder);
+                if (fetchMythicBlackCore) setHasMoreMythicBlackCore(mythicBlackCoreResult.hasMoreMythicBlackCore);
             }
         } catch (err) {
             console.error("MPC search error:", err);
             setCards([]);
             setHasMoreCardsmith(false);
             setHasMoreCardbuilder(false);
+            setHasMoreMythicBlackCore(false);
         } finally {
             setIsLoading(false);
         }
-    }, [query, mpcFuzzySearch, cardData, overrideCardType, searchContext, cardsmithSort]);
+    }, [query, mpcFuzzySearch, cardData, overrideCardType, searchContext, cardsmithSort, category]);
 
     // Auto-search effect
     useEffect(() => {
@@ -201,6 +216,7 @@ export function useMpcSearch(
                 setCards([]);
                 setHasMoreCardsmith(false);
                 setHasMoreCardbuilder(false);
+                setHasMoreMythicBlackCore(false);
                 lastSearchedName.current = "";
                 lastSearchParams.current = null;
             }
@@ -358,6 +374,7 @@ export function useMpcSearch(
         hasResults: cards.length > 0,
         hasMoreCardsmith,
         hasMoreCardbuilder,
+        hasMoreMythicBlackCore,
         filters: {
             minDpi,
             sourceFilters,

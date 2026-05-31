@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { TextInput } from "flowbite-react";
-import { X, Filter } from "lucide-react";
+import { X, Filter, RefreshCw } from "lucide-react";
 
 import { ArtSourceToggle, ResponsiveModal, FloatingZoomPanel, CardArtContent } from "../common";
+import type { ArtSource } from "../common/ArtSourceToggle";
 import { useToastStore } from "@/store/toast";
+import { API_BASE } from "@/constants";
 
 import { useZoomShortcuts } from "@/hooks/useZoomShortcuts";
 import { useArtworkModalStore } from "@/store/artworkModal";
 
-
-type ArtSource = 'scryfall' | 'mpc';
 
 interface AdvancedSearchProps {
     isOpen: boolean;
@@ -32,6 +32,7 @@ export function AdvancedSearch({
     const [mpcFiltersCollapsed, setMpcFiltersCollapsed] = useState(false);
     const [activeFilterCount, setActiveFilterCount] = useState(0);
     const [query, setQuery] = useState('');
+    const [isClearingCache, setIsClearingCache] = useState(false);
     const cardZoom = useArtworkModalStore((state) => state.advancedSearchZoom);
     const setCardZoom = useArtworkModalStore((state) => state.setAdvancedSearchZoom);
 
@@ -52,6 +53,23 @@ export function AdvancedSearch({
 
     const handleClear = () => {
         setQuery('');
+    };
+
+    const handleClearCache = async () => {
+        setIsClearingCache(true);
+        try {
+            const res = await fetch(`${API_BASE}/api/cards/images/cache`, { method: 'DELETE' });
+            const data = await res.json();
+            if (res.ok) {
+                useToastStore.getState().showSuccessToast(`Cache cleared: ${data.cleared} searches, ${data.imagesCleared} images`);
+            } else {
+                useToastStore.getState().showErrorToast("Failed to clear cache");
+            }
+        } catch {
+            useToastStore.getState().showErrorToast("Failed to clear cache");
+        } finally {
+            setIsClearingCache(false);
+        }
     };
 
     const handleSelectCard = useCallback((cardName: string, imageUrl?: string, specificPrint?: { set: string; number: string }) => {
@@ -177,6 +195,16 @@ export function AdvancedSearch({
                             </div>
                         </button>
                     )}
+
+                    {/* Clear cache button */}
+                    <button
+                        onClick={handleClearCache}
+                        disabled={isClearingCache}
+                        className="flex items-center justify-center h-10 w-10 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+                        title="Clear search cache"
+                    >
+                        <RefreshCw className={`w-5 h-5 ${isClearingCache ? 'animate-spin' : ''}`} />
+                    </button>
 
                     <div className="relative flex-1 h-10">
                         <TextInput

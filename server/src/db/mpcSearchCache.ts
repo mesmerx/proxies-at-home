@@ -168,3 +168,19 @@ export function clearExpiredMpcCache(): number {
         return 0;
     }
 }
+
+/**
+ * Clear ALL entries from cache regardless of age.
+ * Used when the user explicitly invalidates the cache.
+ */
+export function clearAllMpcSearchCache(): number {
+    try {
+        const db = getDatabase();
+        const result = db.prepare('DELETE FROM mpc_search_cache').run();
+        debugLog(`[MPC Cache] Cleared all ${result.changes} entries`);
+        return result.changes;
+    } catch (error) {
+        debugLog('[MPC Cache] Failed to clear all entries:', (error as Error).message);
+        return 0;
+    }
+}

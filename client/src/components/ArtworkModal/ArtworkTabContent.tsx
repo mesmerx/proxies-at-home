@@ -2,13 +2,12 @@ import { useState } from "react";
 import { Button, Checkbox } from "flowbite-react";
 import { Search, Filter, Image, Settings } from "lucide-react";
 import { ToggleButtonGroup, CardGrid, ArtSourceToggle, FloatingZoomPanel, CardArtContent } from "../common";
+import type { ArtSource } from "../common/ArtSourceToggle";
 
 import { CardbackLibrary } from "./CardbackLibrary";
 import type { CardOption, PrintInfo } from "../../../../shared/types";
 import { isCardbackId, type CardbackOption } from "@/helpers/cardbackLibrary";
 import type { MpcAutofillCard } from "@/helpers/mpcAutofillApi";
-
-type ArtSource = 'scryfall' | 'mpc';
 
 /** SVG icon for the MTG cardback button */
 function CardbackIcon() {
@@ -281,8 +280,8 @@ export function ArtworkTabContent({
                         </div>
                     )}
 
-                    {/* Filter button - for both MPC and Scryfall, hidden for cardback library */}
-                    {!showCardbackLibraryGrid && (artSource === 'mpc' || artSource === 'scryfall') && (
+                    {/* Filter button - for all art sources, hidden for cardback library */}
+                    {!showCardbackLibraryGrid && (
                         <button
                             onClick={() => onMpcFiltersCollapsedChange?.(!mpcFiltersCollapsed)}
                             className={`flex items-center justify-center h-10 w-10 rounded-lg border transition-colors ${mpcFiltersCollapsed
